@@ -4,12 +4,13 @@ import (
 	"fmt"
 	"os"
 	"testing"
+	"time"
 )
 
-func testRetentionDef(t *testing.T, retentionDef string, expectedPrecision, expectedPoints int64, hasError bool) {
+func testRetentionDef(t *testing.T, retentionDef string, expectedPrecision, expectedPoints int, hasError bool) {
 	errTpl := fmt.Sprintf("Expected %%v to be %%v but received %%v for retentionDef %v", retentionDef)
 
-	precision, points, err := parseRetentionDef(retentionDef)
+	retention, err := parseRetentionDef(retentionDef)
 
 	if (err == nil && hasError) || (err != nil && !hasError) {
 		if hasError {
@@ -18,11 +19,13 @@ func testRetentionDef(t *testing.T, retentionDef string, expectedPrecision, expe
 			t.Fatalf("Expected no error but received %v for retentionDef %v", err, retentionDef)
 		}
 	}
-	if precision != expectedPrecision {
-		t.Fatalf(errTpl, "precision", expectedPrecision, precision)
-	}
-	if points != expectedPoints {
-		t.Fatalf(errTpl, "points", expectedPoints, points)
+	if err == nil {
+		if retention.secondsPerPoint != expectedPrecision {
+			t.Fatalf(errTpl, "precision", expectedPrecision, retention.secondsPerPoint)
+		}
+		if retention.numberOfPoints != expectedPoints {
+			t.Fatalf(errTpl, "points", expectedPoints, retention.numberOfPoints)
+		}
 	}
 }
 
@@ -35,14 +38,14 @@ func TestRetentionDef(t *testing.T) {
 	testRetentionDef(t, "1m:30f", 0, 0, true)
 }
 
-func setUpCreate() (path string, fileExists func(string) bool, archiveList []ArchiveInfo, tearDown func()) {
+func setUpCreate() (path string, fileExists func(string) bool, archiveList []Retention, tearDown func()) {
 	path = "/tmp/whisper-testing.wsp"
 	os.Remove(path)
 	fileExists = func(path string) bool {
 		fi, _ := os.Lstat(path)
 		return fi != nil
 	}
-	archiveList = []ArchiveInfo{{1, 300}, {60, 30}, {300, 12}}
+	archiveList = []Retention{{1, 300}, {60, 30}, {300, 12}}
 	tearDown = func() {
 		os.Remove(path)
 	}
@@ -56,17 +59,17 @@ func TestCreateCreatesFile(t *testing.T) {
 		0x00, 0x00, 0x00, 0x01, // Aggregation type
 		0x00, 0x00, 0x0e, 0x10, // Max retention
 		0x3f, 0x00, 0x00, 0x00, // xFilesFactor
-		0x00, 0x00, 0x00, 0x03, // ArchiveInfo count
-		// ArchiveInfo
-		// ArchiveInfo 1 (1, 300)
+		0x00, 0x00, 0x00, 0x03, // Retention count
+		// Archive Info
+		// Retention 1 (1, 300)
 		0x00, 0x00, 0x00, 0x34, // offset
 		0x00, 0x00, 0x00, 0x01, // secondsPerPoint
 		0x00, 0x00, 0x01, 0x2c, // numberOfPoints
-		// ArchiveInfo 2 (60, 30)
+		// Retention 2 (60, 30)
 		0x00, 0x00, 0x0e, 0x44, // offset
 		0x00, 0x00, 0x00, 0x3c, // secondsPerPoint
 		0x00, 0x00, 0x00, 0x1e, // numberOfPoints
-		// ArchiveInfo 3 (300, 12)
+		// Retention 3 (300, 12)
 		0x00, 0x00, 0x0f, 0xac, // offset
 		0x00, 0x00, 0x01, 0x2c, // secondsPerPoint
 		0x00, 0x00, 0x00, 0x0c} // numberOfPoints
@@ -100,7 +103,7 @@ func TestCreateCreatesFile(t *testing.T) {
 func TestCreateFileAlreadyExists(t *testing.T) {
 	path, _, _, tearDown := setUpCreate()
 	os.Create(path)
-	err := Create(path, make([]ArchiveInfo, 0), Average, 0.5)
+	err := Create(path, make([]Retention, 0), Average, 0.5)
 	if err == nil {
 		t.Fatalf("Existing file should cause create to fail.")
 	}
@@ -118,7 +121,7 @@ func BenchmarkCreate(b *testing.B) {
 
 func Test_metadataToBytes(t *testing.T) {
 	expected := []byte{0, 0, 0, 1, 0, 0, 0xe, 0x10, 0x3f, 0, 0, 0, 0, 0, 0, 3}
-	received := metadataToBytes([]ArchiveInfo{{1, 300}, {60, 30}, {300, 12}}, Average, 0.5)
+	received := metadataToBytes([]Retention{{1, 300}, {60, 30}, {300, 12}}, Average, 0.5)
 	if len(expected) != len(received) {
 		t.Fatalf("Metadata is no the same length [%v] - [%v]", expected, received)
 	}
@@ -135,7 +138,7 @@ func Test_archiveInfoToBytes(t *testing.T) {
 		0x00, 0x00, 0x01, 0x24, // offset
 		0x00, 0x00, 0x00, 0x01, // secondsPerPointer
 		0x00, 0x00, 0x01, 0x2c} // numberOfPoints
-	received := archiveInfoToBytes(archiveOffset, ArchiveInfo{1, 300})
+	received := archiveInfoToBytes(archiveOffset, Retention{1, 300})
 	if len(expected) != len(received) {
 		t.Fatalf("Received %x is not the same length as %x", expected, received)
 	}
@@ -151,12 +154,27 @@ func Test_readHeader(t *testing.T) {
 	Create(path, archiveList, Average, 0.5)
 
 	file, _ := os.Open(path)
-	readHeader(file)
+	metadata, err := readHeader(file)
+	if err != nil {
+		t.Fatalf("Error received %v", err)
+	}
+	if metadata.aggregationMethod != Average {
+		t.Fatalf("Unexpected aggregationMethod %v, expected %v", metadata.aggregationMethod, Average)
+	}
+	if metadata.maxRetention != 3600 {
+		t.Fatalf("Unexpected maxRetention %v, expected 3600", metadata.maxRetention)
+	}
+	if metadata.xFilesFactor != 0.5 {
+		t.Fatalf("Unexpected xFilesFactor %v, expected 0.5", metadata.xFilesFactor)
+	}
+	if len(metadata.archives) != 3 {
+		t.Fatalf("Unexpected archive count %v, expected 3", len(metadata.archives))
+	}
 	tearDown()
 }
 
 func testAggregate(t *testing.T, method AggregationMethod, expected float64) {
-	received := Aggregate(method, []int{1, 2, 3, 5, 4})
+	received := Aggregate(method, []float64{1.0, 2.0, 3.0, 5.0, 4.0})
 	if expected != received {
 		t.Fatalf("Expected %v, received %v", expected, received)
 	}
@@ -179,4 +197,24 @@ func TestAggregateMax(t *testing.T) {
 
 func TestAggregateMin(t *testing.T) {
 	testAggregate(t, Min, 1.0)
+}
+
+func TestFileUpdate(t *testing.T) {
+	path, _, archiveList, tearDown := setUpCreate()
+	Create(path, archiveList, Average, 0.5)
+	file, _ := os.Open(path)
+	err := FileUpdate(file, 120.5, time.Now().Unix())
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	tearDown()
+}
+
+func Test_proagate(t *testing.T) {
+	path, _, archiveList, tearDown := setUpCreate()
+	Create(path, archiveList, Average, 0.5)
+	file, _ := os.Open(path)
+	header, _ := readHeader(file)
+	propagate(file, header, time.Now().Unix(), &header.archives[0], &header.archives[1])
+	tearDown()
 }
