@@ -78,13 +78,13 @@ type DataPoint struct {
 
 type TimeSeries struct {
 	timeInfo TimeInfo
-	values []float64
+	values   []float64
 }
 
 type TimeInfo struct {
-	fromTime int64
+	fromTime  int64
 	untilTime int64
-	step int64
+	step      int64
 }
 
 func unitMultiplier(s string) (int64, error) {
@@ -348,8 +348,8 @@ func FileUpdate(file *os.File, value float64, timestamp int64) (err error) {
 	var i int
 	var archive ArchiveInfo
 	var lowerArchives []ArchiveInfo
-	for i, archive = range(header.archives) {
-		if int64(archive.secondsRetained)< diff {
+	for i, archive = range header.archives {
+		if int64(archive.secondsRetained) < diff {
 			continue
 		}
 		lowerArchives = header.archives[i+1:] // TODO: should I be copying here?
@@ -362,7 +362,7 @@ func FileUpdate(file *os.File, value float64, timestamp int64) (err error) {
 	binary.Write(myPackedPoint, binary.BigEndian, int32(myInterval))
 	binary.Write(myPackedPoint, binary.BigEndian, float64(value))
 	file.Seek(int64(archive.offset), 0) // TODO: get rid of cast
-	packedPoint := make([]byte, 12) // TODO: get rid of magic number
+	packedPoint := make([]byte, 12)     // TODO: get rid of magic number
 	file.Read(packedPoint)
 	baseInterval, err := unpackInt(packedPoint[0:4], "baseInterval")
 	if err != nil {
@@ -374,16 +374,16 @@ func FileUpdate(file *os.File, value float64, timestamp int64) (err error) {
 		file.Write(myPackedPoint.Bytes())
 	} else {
 		// TODO: remove duplication in propagate
-		timeDistance := myInterval - int64(baseInterval) // TODO: get rid of cast
-		pointDistance := timeDistance / int64(archive.secondsPerPoint) // TODO: get rid of cast
-		byteDistance := pointDistance * 12 // TODO: get rid of magic number
+		timeDistance := myInterval - int64(baseInterval)                         // TODO: get rid of cast
+		pointDistance := timeDistance / int64(archive.secondsPerPoint)           // TODO: get rid of cast
+		byteDistance := pointDistance * 12                                       // TODO: get rid of magic number
 		myOffset := int64(archive.offset) + (byteDistance % int64(archive.size)) // TODO: get rid of cast
 		file.Seek(myOffset, 0)
 		file.Write(myPackedPoint.Bytes())
 	}
 
 	higher := archive
-	for _, lower := range(lowerArchives) {
+	for _, lower := range lowerArchives {
 		propagated, err := propagate(file, header, myInterval, &higher, &lower)
 		if err != nil {
 			return err
@@ -542,14 +542,14 @@ func FileFetch(file *os.File, fromTime, untilTime int64) (*TimeSeries, error) {
 	// TODO: improve this algorithm it's ugly
 	diff := now - fromTime
 	var archive ArchiveInfo
-	for _, archive = range(header.archives) {
+	for _, archive = range header.archives {
 		if int64(archive.secondsRetained) >= diff { // TODO: get rid of cast
 			break
 		}
 	}
 
 	// TODO: should be an integer
-	fromInterval := fromTime - (fromTime % int64(archive.secondsPerPoint)) + int64(archive.secondsPerPoint) // TODO: get rid of cast
+	fromInterval := fromTime - (fromTime % int64(archive.secondsPerPoint)) + int64(archive.secondsPerPoint)    // TODO: get rid of cast
 	untilInterval := untilTime - (untilTime % int64(archive.secondsPerPoint)) + int64(archive.secondsPerPoint) // TODO: get rid of cast
 
 	file.Seek(int64(archive.offset), 0)
@@ -561,7 +561,6 @@ func FileFetch(file *os.File, fromTime, untilTime int64) (*TimeSeries, error) {
 		return nil, err
 	}
 
-
 	if baseInterval == 0 {
 		step := int64(archive.secondsPerPoint) // TODO: get rid of cast
 		points := (untilInterval - fromInterval) / step
@@ -572,12 +571,12 @@ func FileFetch(file *os.File, fromTime, untilTime int64) (*TimeSeries, error) {
 	}
 
 	// TODO: extract these two offset calcs (also done when writing)
-	timeDistance := fromInterval - int64(baseInterval) // TODO: get rid of cast
+	timeDistance := fromInterval - int64(baseInterval)             // TODO: get rid of cast
 	pointDistance := timeDistance / int64(archive.secondsPerPoint) // TODO: get rid of cast
 	byteDistance := pointDistance * 12
 	fromOffset := int64(archive.offset) + (byteDistance % int64(archive.size)) // TODO: get rid of cast
 
-	timeDistance = untilInterval - int64(baseInterval) // TODO: get rid of cast
+	timeDistance = untilInterval - int64(baseInterval)            // TODO: get rid of cast
 	pointDistance = timeDistance / int64(archive.secondsPerPoint) // TODO: get rid of cast
 	byteDistance = pointDistance * 12
 	untilOffset := int64(archive.offset) + (byteDistance % int64(archive.size)) // TODO: get rid of cast
@@ -586,29 +585,29 @@ func FileFetch(file *os.File, fromTime, untilTime int64) (*TimeSeries, error) {
 	file.Seek(int64(fromOffset), 0) // TODO: get rid of cast
 	var seriesBytes []byte
 	if fromOffset < untilOffset {
-		seriesBytes = make([]byte, untilOffset - fromOffset)
+		seriesBytes = make([]byte, untilOffset-fromOffset)
 		file.Read(seriesBytes)
 	} else {
 		archiveEnd := int64(archive.offset) + int64(archive.size) // TODO: get rid of cast
-		seriesBytes = make([]byte, archiveEnd - fromOffset)
+		seriesBytes = make([]byte, archiveEnd-fromOffset)
 		file.Read(seriesBytes)
-		file.Seek(int64(archive.offset), 0) // TODO: get rid of cast
-		chunk := make([]byte, untilOffset - int64(archive.offset)) // TODO: get rid of cast
+		file.Seek(int64(archive.offset), 0)                      // TODO: get rid of cast
+		chunk := make([]byte, untilOffset-int64(archive.offset)) // TODO: get rid of cast
 		file.Read(chunk)
 		seriesBytes = append(seriesBytes, chunk...)
 	}
 
 	// Unpack the series data we just read
 	// TODO: extract this into a common method (also used when writing)
-	series := make([]DataPoint, 0, len(seriesBytes) / 12)
+	series := make([]DataPoint, 0, len(seriesBytes)/12)
 	var interval int
 	var value float64
 	for i := 0; i < len(seriesBytes); i += 12 {
-		interval, err = unpackInt(seriesBytes[i:i+4], fmt.Sprintf("series interval [%v]", i / 12))
+		interval, err = unpackInt(seriesBytes[i:i+4], fmt.Sprintf("series interval [%v]", i/12))
 		if err != nil {
 			return nil, err
 		}
-		value, err = unpackDecimal(seriesBytes[i+4:i+12], fmt.Sprintf("series value [%v]", i / 12))
+		value, err = unpackDecimal(seriesBytes[i+4:i+12], fmt.Sprintf("series value [%v]", i/12))
 		if err != nil {
 			return nil, err
 		}

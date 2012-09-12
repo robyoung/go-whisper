@@ -2,8 +2,8 @@ package whisper
 
 import (
 	"fmt"
-	"os"
 	"math"
+	"os"
 	"testing"
 	"time"
 )
@@ -220,7 +220,7 @@ func testCreateUpdateFetch(t *testing.T, aggregationMethod AggregationMethod, xF
 	now := time.Now().Unix()
 
 	for i := int64(0); i < secondsAgo; i++ {
-		err = FileUpdate(file, currentValue, now - secondsAgo + i)
+		err = FileUpdate(file, currentValue, now-secondsAgo+i)
 		if err != nil {
 			t.Fatalf("Unexpected error for %v: %v", i, err)
 		}
@@ -248,7 +248,7 @@ func testCreateUpdateFetch(t *testing.T, aggregationMethod AggregationMethod, xF
 }
 
 func testFloatAlmostEqual(t *testing.T, received, expected, slop float64) {
-	if math.Abs(expected - received) > slop {
+	if math.Abs(expected-received) > slop {
 		t.Fatalf("Expected %v to be within %v of %v", expected, slop, received)
 	}
 }
@@ -270,7 +270,6 @@ func TestCreateUpdateFetch(t *testing.T) {
 	testFloatAlmostEqual(t, timeSeries.values[0], 0.7, 0.001)
 	testFloatAlmostEqual(t, timeSeries.values[10], 2.7, 0.001)
 	testFloatAlmostEqual(t, timeSeries.values[20], 4.7, 0.001)
-
 
 }
 
@@ -296,7 +295,7 @@ func BenchmarkCreateUpdateFetch(b *testing.B) {
 		now = time.Now().Unix()
 
 		for i := int64(0); i < secondsAgo; i++ {
-			err = FileUpdate(file, currentValue, now - secondsAgo + i)
+			err = FileUpdate(file, currentValue, now-secondsAgo+i)
 			if err != nil {
 				b.Fatalf("Unexpected error for %v: %v", i, err)
 			}
