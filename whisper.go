@@ -76,6 +76,17 @@ type DataPoint struct {
 	value    float64
 }
 
+type TimeSeries struct {
+	timeInfo TimeInfo
+	values []float64
+}
+
+type TimeInfo struct {
+	fromTime int64
+	untilTime int64
+	step int64
+}
+
 func unitMultiplier(s string) (int64, error) {
 	switch {
 	case strings.HasPrefix(s, "s"):
@@ -139,7 +150,7 @@ func Create(path string, archiveList []Retention, aggregationMethod AggregationM
 		return os.ErrExist
 	}
 	file, _ := os.Create(path) // test for error
-	defer func() { file.Close() }()
+	defer file.Close()
 	// lock file ?
 
 	// create metadata
@@ -321,25 +332,74 @@ func readHeader(file *os.File) (metadata *Metadata, err error) {
 func FileUpdate(file *os.File, value float64, timestamp int64) (err error) {
 	// NOTE: this does not lock, it's up to the caller to ensure thread safety
 
-	header, err := readHeader(file)
+	header, err := readHeader(file) // TODO: rename to metadata
 	if err != nil {
 		return err
 	}
-	now := time.Now()
 	// find time position and confirm it's within maxRetention
+	now := time.Now().Unix()
+	diff := now - timestamp
+	if !(diff < int64(header.maxRetention) && diff >= 0) {
+		return fmt.Errorf("Timestamp not covered by any archives in this database")
+	}
+
 	// find the highest precision archive that covers the timestamp
-	// as a consequence find all archives that must be updated
-	fmt.Println(header, now)
+	// TODO: improve this algorithm, it's ugly
+	var i int
+	var archive ArchiveInfo
+	var lowerArchives []ArchiveInfo
+	for i, archive = range(header.archives) {
+		if int64(archive.secondsRetained)< diff {
+			continue
+		}
+		lowerArchives = header.archives[i+1:] // TODO: should I be copying here?
+		break
+	}
+
+	//First we update the highest-precision archive
+	myInterval := timestamp - (timestamp % int64(archive.secondsPerPoint)) // TODO: get rid of cast
+	myPackedPoint := new(bytes.Buffer)
+	binary.Write(myPackedPoint, binary.BigEndian, int32(myInterval))
+	binary.Write(myPackedPoint, binary.BigEndian, float64(value))
+	file.Seek(int64(archive.offset), 0) // TODO: get rid of cast
+	packedPoint := make([]byte, 12) // TODO: get rid of magic number
+	file.Read(packedPoint)
+	baseInterval, err := unpackInt(packedPoint[0:4], "baseInterval")
+	if err != nil {
+		return err
+	}
+
+	if baseInterval == 0 {
+		file.Seek(int64(archive.offset), 0) // TODO: get rid of cast
+		file.Write(myPackedPoint.Bytes())
+	} else {
+		// TODO: remove duplication in propagate
+		timeDistance := myInterval - int64(baseInterval) // TODO: get rid of cast
+		pointDistance := timeDistance / int64(archive.secondsPerPoint) // TODO: get rid of cast
+		byteDistance := pointDistance * 12 // TODO: get rid of magic number
+		myOffset := int64(archive.offset) + (byteDistance % int64(archive.size)) // TODO: get rid of cast
+		file.Seek(myOffset, 0)
+		file.Write(myPackedPoint.Bytes())
+	}
+
+	higher := archive
+	for _, lower := range(lowerArchives) {
+		propagated, err := propagate(file, header, myInterval, &higher, &lower)
+		if err != nil {
+			return err
+		} else if !propagated {
+			break
+		}
+		higher = lower
+	}
+
+	//file.Sync()
 
 	return nil
 }
 
 func propagate(file *os.File, metadata *Metadata, timestamp int64, higher, lower *ArchiveInfo) (bool, error) {
 	lowerIntervalStart := timestamp - (timestamp % int64(lower.secondsPerPoint))
-	lowerIntervalEnd := lowerIntervalStart + int64(lower.secondsPerPoint)
-
-	fmt.Printf("lowerIntervalStart: %v\n", lowerIntervalStart)
-	fmt.Printf("lowerIntervalEnd:   %v\n", lowerIntervalEnd)
 
 	// TODO: look at extracting into a method on ArchiveInfo
 	_, err := file.Seek(int64(higher.offset), 0)
@@ -452,4 +512,120 @@ func propagate(file *os.File, metadata *Metadata, timestamp int64, higher, lower
 		}
 	}
 	return true, nil
+}
+
+func FileFetch(file *os.File, fromTime, untilTime int64) (*TimeSeries, error) {
+	header, err := readHeader(file)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().Unix()
+	if fromTime > untilTime {
+		return nil, fmt.Errorf("Invalid time interval: from time '%s' is after until time '%s'", fromTime, untilTime)
+	}
+	oldestTime := now - int64(header.maxRetention) // TODO: get rid of cast
+	// range is in the future
+	if fromTime > now {
+		return nil, nil
+	}
+	// range is beyond retention
+	if untilTime < oldestTime {
+		return nil, nil
+	}
+	if fromTime < oldestTime {
+		fromTime = oldestTime
+	}
+	if untilTime > now {
+		untilTime = now
+	}
+
+	// TODO: improve this algorithm it's ugly
+	diff := now - fromTime
+	var archive ArchiveInfo
+	for _, archive = range(header.archives) {
+		if int64(archive.secondsRetained) >= diff { // TODO: get rid of cast
+			break
+		}
+	}
+
+	// TODO: should be an integer
+	fromInterval := fromTime - (fromTime % int64(archive.secondsPerPoint)) + int64(archive.secondsPerPoint) // TODO: get rid of cast
+	untilInterval := untilTime - (untilTime % int64(archive.secondsPerPoint)) + int64(archive.secondsPerPoint) // TODO: get rid of cast
+
+	file.Seek(int64(archive.offset), 0)
+	// TODO: maybe only fetch the first number
+	packedPoint := make([]byte, 12) // TODO: get rid of magic number
+	file.Read(packedPoint)
+	baseInterval, err := unpackInt(packedPoint[0:4], "baseInterval")
+	if err != nil {
+		return nil, err
+	}
+
+
+	if baseInterval == 0 {
+		step := int64(archive.secondsPerPoint) // TODO: get rid of cast
+		points := (untilInterval - fromInterval) / step
+		timeInfo := TimeInfo{fromInterval, untilInterval, step}
+		values := make([]float64, points)
+		// TODO: this is wrong, zeros for nil values is wrong
+		return &TimeSeries{timeInfo, values}, nil
+	}
+
+	// TODO: extract these two offset calcs (also done when writing)
+	timeDistance := fromInterval - int64(baseInterval) // TODO: get rid of cast
+	pointDistance := timeDistance / int64(archive.secondsPerPoint) // TODO: get rid of cast
+	byteDistance := pointDistance * 12
+	fromOffset := int64(archive.offset) + (byteDistance % int64(archive.size)) // TODO: get rid of cast
+
+	timeDistance = untilInterval - int64(baseInterval) // TODO: get rid of cast
+	pointDistance = timeDistance / int64(archive.secondsPerPoint) // TODO: get rid of cast
+	byteDistance = pointDistance * 12
+	untilOffset := int64(archive.offset) + (byteDistance % int64(archive.size)) // TODO: get rid of cast
+
+	// Read all the points in the interval
+	file.Seek(int64(fromOffset), 0) // TODO: get rid of cast
+	var seriesBytes []byte
+	if fromOffset < untilOffset {
+		seriesBytes = make([]byte, untilOffset - fromOffset)
+		file.Read(seriesBytes)
+	} else {
+		archiveEnd := int64(archive.offset) + int64(archive.size) // TODO: get rid of cast
+		seriesBytes = make([]byte, archiveEnd - fromOffset)
+		file.Read(seriesBytes)
+		file.Seek(int64(archive.offset), 0) // TODO: get rid of cast
+		chunk := make([]byte, untilOffset - int64(archive.offset)) // TODO: get rid of cast
+		file.Read(chunk)
+		seriesBytes = append(seriesBytes, chunk...)
+	}
+
+	// Unpack the series data we just read
+	// TODO: extract this into a common method (also used when writing)
+	series := make([]DataPoint, 0, len(seriesBytes) / 12)
+	var interval int
+	var value float64
+	for i := 0; i < len(seriesBytes); i += 12 {
+		interval, err = unpackInt(seriesBytes[i:i+4], fmt.Sprintf("series interval [%v]", i / 12))
+		if err != nil {
+			return nil, err
+		}
+		value, err = unpackDecimal(seriesBytes[i+4:i+12], fmt.Sprintf("series value [%v]", i / 12))
+		if err != nil {
+			return nil, err
+		}
+		series = append(series, DataPoint{int32(interval), value})
+	}
+
+	values := make([]float64, len(series))
+	currentInterval := fromInterval
+	step := int64(archive.secondsPerPoint) // TODO: get rid of cast
+
+	for i, dataPoint := range series {
+		if int64(dataPoint.interval) == currentInterval {
+			values[i] = dataPoint.value
+		}
+		currentInterval += step
+	}
+
+	timeInfo := TimeInfo{fromInterval, untilInterval, step}
+	return &TimeSeries{timeInfo, values}, nil
 }

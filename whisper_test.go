@@ -3,6 +3,7 @@ package whisper
 import (
 	"fmt"
 	"os"
+	"math"
 	"testing"
 	"time"
 )
@@ -199,15 +200,116 @@ func TestAggregateMin(t *testing.T) {
 	testAggregate(t, Min, 1.0)
 }
 
-func TestFileUpdate(t *testing.T) {
+/*
+	Test the full cycle of creating a whisper file, adding some
+	data points to it and then fetching a time series.
+*/
+func testCreateUpdateFetch(t *testing.T, aggregationMethod AggregationMethod, xFilesFactor float32, secondsAgo, fromAgo, fetchLength, step int64, currentValue, increment float64) *TimeSeries {
+	var err error
+	var file *os.File
 	path, _, archiveList, tearDown := setUpCreate()
-	Create(path, archiveList, Average, 0.5)
-	file, _ := os.Open(path)
-	err := FileUpdate(file, 120.5, time.Now().Unix())
+	err = Create(path, archiveList, aggregationMethod, xFilesFactor)
+	if err != nil {
+		t.Fatalf("Failed create: %v", err)
+	}
+	file, err = os.OpenFile(path, os.O_RDWR, 0666)
+	if err != nil {
+		t.Fatalf("Failed to open: %v", err)
+	}
+	defer file.Close()
+	now := time.Now().Unix()
+
+	for i := int64(0); i < secondsAgo; i++ {
+		err = FileUpdate(file, currentValue, now - secondsAgo + i)
+		if err != nil {
+			t.Fatalf("Unexpected error for %v: %v", i, err)
+		}
+		currentValue += increment
+	}
+
+	fromTime := now - fromAgo
+	untilTime := fromTime + fetchLength
+
+	timeSeries, err := FileFetch(file, fromTime, untilTime)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	if timeSeries.timeInfo.fromTime != (fromTime - (fromTime % step) + step) {
+		t.Fatal("Invalid fromTime, expected %v, received %v", fromTime, timeSeries.timeInfo.fromTime)
+	}
+	if timeSeries.timeInfo.untilTime != (untilTime - (untilTime % step) + step) {
+		t.Fatalf("Invalid untilTime, expected %v, received %v", untilTime, timeSeries.timeInfo.untilTime)
+	}
+	if timeSeries.timeInfo.step != step {
+		t.Fatalf("Invalid step, expected %v, received %v", step, timeSeries.timeInfo.step)
+	}
 	tearDown()
+	return timeSeries
+}
+
+func testFloatAlmostEqual(t *testing.T, received, expected, slop float64) {
+	if math.Abs(expected - received) > slop {
+		t.Fatalf("Expected %v to be within %v of %v", expected, slop, received)
+	}
+}
+
+func TestCreateUpdateFetch(t *testing.T) {
+	var timeSeries *TimeSeries
+	timeSeries = testCreateUpdateFetch(t, Average, 0.5, 3500, 3500, 1000, 300, 0.5, 0.2)
+	testFloatAlmostEqual(t, timeSeries.values[0], 93.0, 27.0)
+	testFloatAlmostEqual(t, timeSeries.values[1], 150.1, 58.0)
+	testFloatAlmostEqual(t, timeSeries.values[2], 210.75, 28.95)
+
+	timeSeries = testCreateUpdateFetch(t, Sum, 0.5, 600, 600, 500, 60, 0.5, 0.2)
+	testFloatAlmostEqual(t, timeSeries.values[0], 18.35, 5.95)
+	testFloatAlmostEqual(t, timeSeries.values[1], 31.25, 4.85)
+	// 4 is a crazy one because it fluctuates between 60 and ~4k
+	testFloatAlmostEqual(t, timeSeries.values[5], 4406.05, 286.05)
+
+	timeSeries = testCreateUpdateFetch(t, Last, 0.5, 300, 300, 200, 1, 0.5, 0.2)
+	testFloatAlmostEqual(t, timeSeries.values[0], 0.7, 0.001)
+	testFloatAlmostEqual(t, timeSeries.values[10], 2.7, 0.001)
+	testFloatAlmostEqual(t, timeSeries.values[20], 4.7, 0.001)
+
+
+}
+
+func BenchmarkCreateUpdateFetch(b *testing.B) {
+	path, _, archiveList, tearDown := setUpCreate()
+	var err error
+	var file *os.File
+	var secondsAgo, now, fromTime, untilTime int64
+	var currentValue, increment float64
+	for i := 0; i < b.N; i++ {
+		err = Create(path, archiveList, Average, 0.5)
+		if err != nil {
+			b.Fatalf("Failed create %v", err)
+		}
+		file, err = os.OpenFile(path, os.O_RDWR, 0666)
+		if err != nil {
+			b.Fatalf("Failed to open %v", err)
+		}
+
+		secondsAgo = int64(3500)
+		currentValue = 0.5
+		increment = 0.2
+		now = time.Now().Unix()
+
+		for i := int64(0); i < secondsAgo; i++ {
+			err = FileUpdate(file, currentValue, now - secondsAgo + i)
+			if err != nil {
+				b.Fatalf("Unexpected error for %v: %v", i, err)
+			}
+			currentValue += increment
+		}
+
+		fromTime = now - secondsAgo
+		untilTime = fromTime + 1000
+
+		FileFetch(file, fromTime, untilTime)
+		file.Close()
+		tearDown()
+	}
 }
 
 func Test_proagate(t *testing.T) {
