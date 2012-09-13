@@ -1,10 +1,3 @@
-/*
-	Package whisper implements the timeseries database backend
-	for the Graphite project.
-
-	You can find more information at http://graphite.wikidot.com/
-	You can find the Whisper Python code at https://github.com/graphite-project/whisper
-*/
 package whisper
 
 import (
@@ -18,11 +11,14 @@ import (
 	"time"
 )
 
-var retentionRegexp *regexp.Regexp
-
-func init() {
-	retentionRegexp = regexp.MustCompile("^(\\d+)([smhdwy]+)$")
-}
+const (
+	IntSize         = 4
+	FloatSize       = 4
+	Float64Size     = 8
+	PointSize       = 12
+	MetadataSize    = 16
+	ArchiveInfoSize = 12
+)
 
 const (
 	Seconds = 1
@@ -43,51 +39,7 @@ const (
 	Min
 )
 
-type Metadata struct {
-	aggregationMethod AggregationMethod
-	maxRetention      int
-	xFilesFactor      float32
-	archives          []ArchiveInfo
-}
-
-/*
-	Describes how an archive will be stored in terms of the number of seconds each point
-	represents and the number of points the archive will retain. This is calculated
-	from a RetentionDef.
-*/
-type Retention struct {
-	secondsPerPoint int
-	numberOfPoints  int
-}
-
-/*
-	Describes an archive in a whisper file.
-*/
-type ArchiveInfo struct {
-	offset          int
-	secondsPerPoint int
-	numberOfPoints  int
-	secondsRetained int
-	size            int
-}
-
-type DataPoint struct {
-	interval int32
-	value    float64
-}
-
-type TimeSeries struct {
-	timeInfo TimeInfo
-	values   []float64
-}
-
-type TimeInfo struct {
-	fromTime  int64
-	untilTime int64
-	step      int64
-}
-
-func unitMultiplier(s string) (int64, error) {
+func unitMultiplier(s string) (int, error) {
 	switch {
 	case strings.HasPrefix(s, "s"):
 		return Seconds, nil
@@ -105,8 +57,10 @@ func unitMultiplier(s string) (int64, error) {
 	return 0, fmt.Errorf("Invalid unit multiplier [%v]", s)
 }
 
+var retentionRegexp *regexp.Regexp = regexp.MustCompile("^(\\d+)([smhdwy]+)$")
+
 func parseRetentionPart(retentionPart string) (int, error) {
-	part, err := strconv.ParseInt(retentionPart, 10, 64)
+	part, err := strconv.ParseInt(retentionPart, 10, 32)
 	if err == nil {
 		return int(part), nil
 	}
@@ -119,10 +73,10 @@ func parseRetentionPart(retentionPart string) (int, error) {
 		panic(fmt.Sprintf("Regex on %v is borked, %v cannot be parsed as int", retentionPart, matches[1]))
 	}
 	multiplier, err := unitMultiplier(matches[2])
-	return int(multiplier * value), err
+	return multiplier * int(value), err
 }
 
-func parseRetentionDef(retentionDef string) (*Retention, error) {
+func ParseRetentionDef(retentionDef string) (*Retention, error) {
 	parts := strings.Split(retentionDef, ":")
 	if len(parts) != 2 {
 		return nil, fmt.Errorf("Not enough parts in retentionDef [%v]", retentionDef)
@@ -141,66 +95,413 @@ func parseRetentionDef(retentionDef string) (*Retention, error) {
 	return &Retention{precision, points}, err
 }
 
-// Create a new whisper database file
-func Create(path string, archiveList []Retention, aggregationMethod AggregationMethod, xFilesFactor float32) error {
-	// validate archive list
-	// open file
-	_, err := os.Stat(path)
+/*
+	Represents a Whisper database file.
+*/
+type Whisper struct {
+	file *os.File
+
+	// Metadata
+	aggregationMethod AggregationMethod
+	maxRetention      int
+	xFilesFactor      float32
+	archives          []ArchiveInfo
+}
+
+/*
+	Create a new Whisper database file and write it's header.
+*/
+func Create(path string, retentions []Retention, aggregationMethod AggregationMethod, xFilesFactor float32) (whisper *Whisper, err error) {
+	_, err = os.Stat(path)
 	if err == nil {
-		return os.ErrExist
+		return nil, os.ErrExist
 	}
-	file, _ := os.Create(path) // test for error
-	defer file.Close()
-	// lock file ?
+	file, err := os.Create(path)
+	if err != nil {
+		return nil, err
+	}
+	whisper = new(Whisper)
 
-	// create metadata
-	// write metadata
-	file.Write(metadataToBytes(archiveList, aggregationMethod, xFilesFactor))
-
-	// write archive info
-	headerSize := 0x10 + (0x0c * len(archiveList)) // TODO: calculate this
-	archiveOffset := headerSize
-	for _, archive := range archiveList {
-		file.Write(archiveInfoToBytes(archiveOffset, archive))
-		archiveOffset += (archive.numberOfPoints * 12)
+	whisper.file = file
+	whisper.aggregationMethod = aggregationMethod
+	whisper.xFilesFactor = xFilesFactor
+	for _, retention := range retentions {
+		if (retention.MaxRetention()) > whisper.maxRetention {
+			whisper.maxRetention = retention.MaxRetention()
+		}
+	}
+	offset := MetadataSize + (ArchiveInfoSize * len(retentions))
+	whisper.archives = make([]ArchiveInfo, 0, len(retentions))
+	for _, retention := range retentions {
+		whisper.archives = append(whisper.archives, ArchiveInfo{retention, offset})
+		offset += retention.Size()
 	}
 
-	// allocate file size
-	// fallocate proved slower
-	remaining := archiveOffset - headerSize
+	err = whisper.writeHeader()
+	if err != nil {
+		return nil, err
+	}
+
+	// pre-allocate file size, fallocate proved slower
+	remaining := whisper.Size() - whisper.MetadataSize()
 	chunkSize := 16384
 	zeros := make([]byte, chunkSize)
 	for remaining > chunkSize {
-		file.Write(zeros)
+		whisper.file.Write(zeros)
 		remaining -= chunkSize
 	}
-	file.Write(zeros[:remaining])
-	// sync
-	file.Sync()
+	whisper.file.Write(zeros[:remaining])
+	whisper.file.Sync()
+
+	return whisper, nil
+}
+
+func (whisper *Whisper) writeHeader() (err error) {
+	if err = binary.Write(whisper.file, binary.BigEndian, int32(whisper.aggregationMethod)); err != nil {
+		return err
+	}
+
+	if err = binary.Write(whisper.file, binary.BigEndian, int32(whisper.maxRetention)); err != nil {
+		return err
+	}
+	if err = binary.Write(whisper.file, binary.BigEndian, whisper.xFilesFactor); err != nil {
+		return err
+	}
+	if err = binary.Write(whisper.file, binary.BigEndian, int32(len(whisper.archives))); err != nil {
+		return err
+	}
+	for _, archive := range whisper.archives {
+		if err = binary.Write(whisper.file, binary.BigEndian, int32(archive.offset)); err != nil {
+			return err
+		}
+		if err = binary.Write(whisper.file, binary.BigEndian, int32(archive.secondsPerPoint)); err != nil {
+			return err
+		}
+		if err = binary.Write(whisper.file, binary.BigEndian, int32(archive.numberOfPoints)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (whisper *Whisper) Close() {
+	whisper.file.Close()
+}
+
+func (whisper *Whisper) Size() int {
+	size := whisper.MetadataSize()
+	for _, archive := range whisper.archives {
+		size += archive.Size()
+	}
+	return size
+}
+
+func (whisper *Whisper) MetadataSize() int {
+	return MetadataSize + (ArchiveInfoSize * len(whisper.archives))
+}
+
+func (whisper *Whisper) Update(value float64, timestamp int) (err error) {
+	now := int(time.Now().Unix())
+	diff := now - timestamp
+	if !(diff < whisper.maxRetention && diff >= 0) {
+		return fmt.Errorf("Timestamp not covered by any archives in this database")
+	}
+	var archive ArchiveInfo
+	var lowerArchives []ArchiveInfo
+	var i int
+	for i, archive = range whisper.archives {
+		if archive.MaxRetention() < diff {
+			continue
+		}
+		lowerArchives = whisper.archives[i+1:] // TODO: investigate just returning the positions
+		break
+	}
+
+	myInterval := timestamp - (timestamp % archive.secondsPerPoint)
+	point := DataPoint{myInterval, value}
+	baseInterval, err := whisper.readInt(archive.Offset())
+	if err != nil {
+		return err // TODO: make error better
+	}
+
+	if baseInterval == 0 {
+		_, err = whisper.file.WriteAt(point.Bytes(), archive.Offset())
+	} else {
+		// TODO: extract duplication
+		timeDistance := myInterval - baseInterval
+		pointDistance := timeDistance / archive.secondsPerPoint
+		byteDistance := pointDistance * PointSize
+		myOffset := archive.Offset() + int64(byteDistance%archive.Size())
+		_, err = whisper.file.WriteAt(point.Bytes(), myOffset)
+	}
+	if err != nil {
+		return err
+	}
+
+	higher := archive
+	for _, lower := range lowerArchives {
+		propagated, err := whisper.propagate(myInterval, &higher, &lower)
+		if err != nil {
+			return err
+		} else if !propagated {
+			break
+		}
+		higher = lower
+	}
 
 	return nil
 }
 
-func metadataToBytes(archiveList []Retention, aggregationMethod AggregationMethod, xFilesFactor float32) []byte {
-	buffer := new(bytes.Buffer)
-	binary.Write(buffer, binary.BigEndian, int32(aggregationMethod))
-	var oldest int
-	for _, archive := range archiveList {
-		if (archive.secondsPerPoint * archive.numberOfPoints) > oldest {
-			oldest = archive.secondsPerPoint * archive.numberOfPoints
+func (whisper *Whisper) propagate(timestamp int, higher, lower *ArchiveInfo) (bool, error) {
+	lowerIntervalStart := timestamp - (timestamp % lower.secondsPerPoint)
+
+	higherBaseInterval, err := whisper.readInt(higher.Offset())
+	if err != nil {
+		return false, err
+	}
+
+	var higherFirstOffset int
+	if higherBaseInterval == 0 {
+		higherFirstOffset = higherBaseInterval
+	} else {
+		// TODO: extract duplication
+		timeDistance := lowerIntervalStart - higherBaseInterval
+		pointDistance := timeDistance / higher.secondsPerPoint
+		byteDistance := pointDistance * PointSize
+		higherFirstOffset = higher.offset + (byteDistance % higher.Size())
+	}
+
+	// TODO: extract all this series extraction stuff
+	higherPoints := lower.secondsPerPoint / higher.secondsPerPoint
+	higherSize := higherPoints * PointSize
+	relativeFirstOffset := higherFirstOffset - higher.offset
+	relativeLastOffset := (relativeFirstOffset + higherSize) % higher.Size()
+	higherLastOffset := relativeLastOffset + higher.offset
+
+	var seriesBytes []byte
+	if higherFirstOffset < higherLastOffset {
+		seriesBytes = make([]byte, higherLastOffset-higherFirstOffset)
+		whisper.file.ReadAt(seriesBytes, int64(higherFirstOffset))
+	} else {
+		seriesBytes = make([]byte, higher.offset+higher.Size()-higherFirstOffset)
+		whisper.file.ReadAt(seriesBytes, int64(higherFirstOffset))
+		chunk := make([]byte, higherLastOffset-higher.offset)
+		whisper.file.ReadAt(chunk, higher.Offset())
+		seriesBytes = append(seriesBytes, chunk...)
+	}
+
+	// now we unpack the series data we just read
+	series := make([]DataPoint, 0, len(seriesBytes)/PointSize)
+	for i := 0; i < len(seriesBytes); i += PointSize {
+		interval, err := unpackInt(seriesBytes[i : i+IntSize])
+		if err != nil {
+			return false, err
+		}
+		value, err := unpackFloat64(seriesBytes[i+IntSize : i+PointSize])
+		if err != nil {
+			return false, err
+		}
+		series = append(series, DataPoint{interval, value})
+	}
+
+	// and finally we construct a list of values
+	knownValues := make([]float64, 0, len(series))
+	currentInterval := lowerIntervalStart
+
+	for _, dataPoint := range series {
+		if dataPoint.interval == currentInterval {
+			knownValues = append(knownValues, dataPoint.value)
+		}
+		currentInterval += higher.secondsPerPoint
+	}
+
+	// propagate aggregateValue to propagate from neighborValues if we have enough known points        
+	if len(knownValues) == 0 {
+		return false, nil
+	}
+	knownPercent := float32(len(knownValues)) / float32(len(series))
+	if knownPercent < whisper.xFilesFactor { // we have enough data points to propagate a value       
+		return false, nil
+	} else {
+		aggregateValue := Aggregate(whisper.aggregationMethod, knownValues)
+		point := DataPoint{lowerIntervalStart, aggregateValue}
+		lowerBaseInterval, err := whisper.readInt(lower.Offset())
+		if err != nil {
+			return false, err // TODO: make better error
+		}
+		if lowerBaseInterval == 0 {
+			whisper.file.WriteAt(point.Bytes(), lower.Offset())
+		} else {
+			timeDistance := lowerIntervalStart - lowerBaseInterval
+			pointDistance := timeDistance / lower.secondsPerPoint
+			byteDistance := pointDistance * PointSize
+			lowerOffset := lower.Offset() + int64(byteDistance%lower.Size())
+			whisper.file.WriteAt(point.Bytes(), lowerOffset)
 		}
 	}
-	binary.Write(buffer, binary.BigEndian, int32(oldest))
-	binary.Write(buffer, binary.BigEndian, xFilesFactor)
-	binary.Write(buffer, binary.BigEndian, int32(len(archiveList)))
-	return buffer.Bytes()
+	return true, nil
 }
 
-func archiveInfoToBytes(archiveOffset int, archive Retention) []byte {
+func (whisper *Whisper) Fetch(fromTime, untilTime int) (timeSeries *TimeSeries, err error) {
+	now := int(time.Now().Unix()) // TODO: danger of 2030 something overflow
+	if fromTime > untilTime {
+		return nil, fmt.Errorf("Invalid time interval: from time '%s' is after until time '%s'", fromTime, untilTime)
+	}
+	oldestTime := now - whisper.maxRetention
+	// range is in the future
+	if fromTime > now {
+		return nil, nil
+	}
+	// range is beyond retention
+	if untilTime < oldestTime {
+		return nil, nil
+	}
+	if fromTime < oldestTime {
+		fromTime = oldestTime
+	}
+	if untilTime > now {
+		untilTime = now
+	}
+
+	// TODO: improve this algorithm it's ugly
+	diff := now - fromTime
+	var archive ArchiveInfo
+	for _, archive = range whisper.archives {
+		if archive.MaxRetention() >= diff {
+			break
+		}
+	}
+
+	// TODO: should be an integer
+	fromInterval := fromTime - (fromTime % archive.secondsPerPoint) + archive.secondsPerPoint
+	untilInterval := untilTime - (untilTime % archive.secondsPerPoint) + archive.secondsPerPoint
+
+	baseInterval, err := whisper.readInt(archive.Offset())
+	if err != nil {
+		return nil, err
+	}
+
+	if baseInterval == 0 {
+		step := archive.secondsPerPoint
+		points := (untilInterval - fromInterval) / step
+		values := make([]float64, points)
+		// TODO: this is wrong, zeros for nil values is wrong
+		return &TimeSeries{fromInterval, untilInterval, step, values}, nil
+	}
+
+	// TODO: extract these two offset calcs (also done when writing)
+	timeDistance := fromInterval - baseInterval
+	pointDistance := timeDistance / archive.secondsPerPoint
+	byteDistance := pointDistance * PointSize
+	fromOffset := archive.offset + (byteDistance % archive.Size())
+
+	timeDistance = untilInterval - baseInterval
+	pointDistance = timeDistance / archive.secondsPerPoint
+	byteDistance = pointDistance * PointSize
+	untilOffset := archive.offset + (byteDistance % archive.Size())
+
+	// Read all the points in the interval
+	var seriesBytes []byte
+	if fromOffset < untilOffset {
+		seriesBytes = make([]byte, untilOffset-fromOffset)
+		_, err = whisper.file.ReadAt(seriesBytes, int64(fromOffset))
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		archiveEnd := archive.offset + archive.Size()
+		seriesBytes = make([]byte, archiveEnd-fromOffset)
+		_, err = whisper.file.ReadAt(seriesBytes, int64(fromOffset))
+		if err != nil {
+			return nil, err
+		}
+		chunk := make([]byte, untilOffset-archive.offset)
+		_, err = whisper.file.ReadAt(chunk, archive.Offset())
+		if err != nil {
+			return nil, err
+		}
+		seriesBytes = append(seriesBytes, chunk...)
+	}
+
+	// Unpack the series data we just read
+	// TODO: extract this into a common method (also used when writing)
+	series := make([]DataPoint, 0, len(seriesBytes)/PointSize)
+	for i := 0; i < len(seriesBytes); i += PointSize {
+		interval, err := unpackInt(seriesBytes[i : i+IntSize])
+		if err != nil {
+			return nil, err
+		}
+		value, err := unpackFloat64(seriesBytes[i+IntSize : i+PointSize])
+		if err != nil {
+			return nil, err
+		}
+		series = append(series, DataPoint{interval, value})
+	}
+
+	values := make([]float64, len(series))
+	currentInterval := fromInterval
+	step := archive.secondsPerPoint
+
+	for i, dataPoint := range series {
+		if dataPoint.interval == currentInterval { // TODO: get rid of cast
+			values[i] = dataPoint.value
+		}
+		currentInterval += step
+	}
+
+	return &TimeSeries{fromInterval, untilInterval, step, values}, nil
+}
+
+func (whisper *Whisper) readInt(offset int64) (int, error) {
+	// TODO: make errors better
+	byteArray := make([]byte, IntSize)
+	_, err := whisper.file.ReadAt(byteArray, offset)
+	if err != nil {
+		return 0, err
+	}
+
+	return unpackInt(byteArray)
+}
+
+type Retention struct {
+	secondsPerPoint int
+	numberOfPoints  int
+}
+
+func (retention *Retention) MaxRetention() int {
+	return retention.secondsPerPoint * retention.numberOfPoints
+}
+
+func (retention *Retention) Size() int {
+	return retention.numberOfPoints * PointSize
+}
+
+type ArchiveInfo struct {
+	Retention
+	offset int
+}
+
+func (archive *ArchiveInfo) Offset() int64 {
+	return int64(archive.offset)
+}
+
+type TimeSeries struct {
+	fromTime  int
+	untilTime int
+	step      int
+	values    []float64
+}
+
+type DataPoint struct {
+	interval int
+	value    float64
+}
+
+func (point *DataPoint) Bytes() []byte {
 	buffer := new(bytes.Buffer)
-	binary.Write(buffer, binary.BigEndian, int32(archiveOffset))
-	binary.Write(buffer, binary.BigEndian, int32(archive.secondsPerPoint))
-	binary.Write(buffer, binary.BigEndian, int32(archive.numberOfPoints))
+	binary.Write(buffer, binary.BigEndian, int32(point.interval))
+	binary.Write(buffer, binary.BigEndian, point.value)
+
 	return buffer.Bytes()
 }
 
@@ -211,6 +512,7 @@ func sum(values []float64) float64 {
 	}
 	return result
 }
+
 func Aggregate(method AggregationMethod, knownValues []float64) float64 {
 	switch method {
 	case Average:
@@ -239,392 +541,21 @@ func Aggregate(method AggregationMethod, knownValues []float64) float64 {
 	panic("Invalid aggregation method")
 }
 
-func unpackInt(byteArray []byte, name string) (int, error) {
+func unpackInt(byteArray []byte) (int, error) {
 	buffer := bytes.NewBuffer(byteArray)
 	var value int32
 	err := binary.Read(buffer, binary.BigEndian, &value)
 	if err != nil {
-		return 0, fmt.Errorf("Failed to read %v: %v", name, err)
+		return 0, fmt.Errorf("Failed to read int: %v", err)
 	}
 	return int(value), nil
 }
 
-func unpackFloat(byteArray []byte, name string) (float32, error) {
-	buffer := bytes.NewBuffer(byteArray)
-	var value float32
-	err := binary.Read(buffer, binary.BigEndian, &value)
-	if err != nil {
-		return 0, fmt.Errorf("Failed to read %v: %v", name, err)
-	}
-	return value, nil
-}
-
-func unpackDecimal(byteArray []byte, name string) (value float64, err error) {
+func unpackFloat64(byteArray []byte) (value float64, err error) {
 	buffer := bytes.NewBuffer(byteArray)
 	err = binary.Read(buffer, binary.BigEndian, &value)
 	if err != nil {
-		return 0, fmt.Errorf("Failed to read %v: %v", name, err)
+		return 0, fmt.Errorf("Failed to read float64: %v", err)
 	}
 	return value, nil
-}
-
-func readHeader(file *os.File) (metadata *Metadata, err error) {
-	// return from cache
-
-	// store original position
-	// TODO: figure out originalOffset := file.Tell() ... file.Seek(0, 1)
-	// seek to start of file
-	_, err = file.Seek(0, 0)
-	if err != nil {
-		return nil, fmt.Errorf("Failed to read header: %v", err)
-	}
-	// read metadata
-	bytes := make([]byte, 16) // TODO: extract magic number
-	file.Read(bytes)
-	// unpack Metadata
-	// TODO: extract magic numbers
-	aggregationMethod, err := unpackInt(bytes[0:4], "aggregationMethod")
-	if err != nil {
-		return nil, err
-	}
-	maxRetention, err := unpackInt(bytes[4:8], "maxRetention")
-	if err != nil {
-		return nil, err
-	}
-	xFilesFactor, err := unpackFloat(bytes[8:12], "xFilesFactor")
-	if err != nil {
-		return nil, err
-	}
-	archiveCount, err := unpackInt(bytes[12:16], "archiveCount")
-	if err != nil {
-		return nil, err
-	}
-
-	// unpack ArchiveInfo array
-	archives := make([]ArchiveInfo, 0, archiveCount)
-
-	bytes = make([]byte, 12) // TODO: extract magic number
-	var offset, secondsPerPoint, numberOfPoints int
-	for i := 0; i < archiveCount; i++ {
-		file.Read(bytes)
-		offset, err = unpackInt(bytes[0:4], fmt.Sprintf("offset[%v]", i))
-		if err != nil {
-			return nil, err
-		}
-		secondsPerPoint, err = unpackInt(bytes[4:8], fmt.Sprintf("secondsPerPoint[%v]", i))
-		if err != nil {
-			return nil, err
-		}
-		numberOfPoints, err = unpackInt(bytes[8:12], fmt.Sprintf("numberOfPoints[%v]", i))
-		if err != nil {
-			return nil, err
-		}
-		archives = append(archives, ArchiveInfo{offset, secondsPerPoint, numberOfPoints, secondsPerPoint * numberOfPoints, numberOfPoints * 12})
-	}
-
-	// restore original position
-	// store to cache
-
-	metadata = &Metadata{AggregationMethod(aggregationMethod), maxRetention, xFilesFactor, archives}
-	return metadata, err
-}
-
-func FileUpdate(file *os.File, value float64, timestamp int64) (err error) {
-	// NOTE: this does not lock, it's up to the caller to ensure thread safety
-
-	header, err := readHeader(file) // TODO: rename to metadata
-	if err != nil {
-		return err
-	}
-	// find time position and confirm it's within maxRetention
-	now := time.Now().Unix()
-	diff := now - timestamp
-	if !(diff < int64(header.maxRetention) && diff >= 0) {
-		return fmt.Errorf("Timestamp not covered by any archives in this database")
-	}
-
-	// find the highest precision archive that covers the timestamp
-	// TODO: improve this algorithm, it's ugly
-	var i int
-	var archive ArchiveInfo
-	var lowerArchives []ArchiveInfo
-	for i, archive = range header.archives {
-		if int64(archive.secondsRetained) < diff {
-			continue
-		}
-		lowerArchives = header.archives[i+1:] // TODO: should I be copying here?
-		break
-	}
-
-	//First we update the highest-precision archive
-	myInterval := timestamp - (timestamp % int64(archive.secondsPerPoint)) // TODO: get rid of cast
-	myPackedPoint := new(bytes.Buffer)
-	binary.Write(myPackedPoint, binary.BigEndian, int32(myInterval))
-	binary.Write(myPackedPoint, binary.BigEndian, float64(value))
-	file.Seek(int64(archive.offset), 0) // TODO: get rid of cast
-	packedPoint := make([]byte, 12)     // TODO: get rid of magic number
-	file.Read(packedPoint)
-	baseInterval, err := unpackInt(packedPoint[0:4], "baseInterval")
-	if err != nil {
-		return err
-	}
-
-	if baseInterval == 0 {
-		file.Seek(int64(archive.offset), 0) // TODO: get rid of cast
-		file.Write(myPackedPoint.Bytes())
-	} else {
-		// TODO: remove duplication in propagate
-		timeDistance := myInterval - int64(baseInterval)                         // TODO: get rid of cast
-		pointDistance := timeDistance / int64(archive.secondsPerPoint)           // TODO: get rid of cast
-		byteDistance := pointDistance * 12                                       // TODO: get rid of magic number
-		myOffset := int64(archive.offset) + (byteDistance % int64(archive.size)) // TODO: get rid of cast
-		file.Seek(myOffset, 0)
-		file.Write(myPackedPoint.Bytes())
-	}
-
-	higher := archive
-	for _, lower := range lowerArchives {
-		propagated, err := propagate(file, header, myInterval, &higher, &lower)
-		if err != nil {
-			return err
-		} else if !propagated {
-			break
-		}
-		higher = lower
-	}
-
-	//file.Sync()
-
-	return nil
-}
-
-func propagate(file *os.File, metadata *Metadata, timestamp int64, higher, lower *ArchiveInfo) (bool, error) {
-	lowerIntervalStart := timestamp - (timestamp % int64(lower.secondsPerPoint))
-
-	// TODO: look at extracting into a method on ArchiveInfo
-	_, err := file.Seek(int64(higher.offset), 0)
-	if err != nil {
-		return false, fmt.Errorf("Failed to read point: %v", err)
-	}
-	packedPoint := make([]byte, 12) // TODO: extract magic number
-	file.Read(packedPoint)
-	higherBaseInterval, err := unpackInt(packedPoint[0:4], "higherBaseInterval")
-	if err != nil {
-		return false, err
-	}
-	// Only the first number is needed TODO: address this
-	//higherBaseValue, err := unpackDecimal(bytes[4:12], "higherBaseValue")
-	//if err != nil { return false, err }
-
-	var higherFirstOffset int
-	if higherBaseInterval == 0 {
-		higherFirstOffset = higher.offset
-	} else {
-		timeDistance := int(lowerIntervalStart) - higherBaseInterval
-		pointDistance := timeDistance / higher.secondsPerPoint
-		byteDistance := pointDistance * 12 // TODO: extract magic number
-		higherFirstOffset = higher.offset + (byteDistance % higher.size)
-	}
-
-	// TODO: todo all this series extraction stuff
-	higherPoints := lower.secondsPerPoint / higher.secondsPerPoint
-	higherSize := higherPoints * 12
-	relativeFirstOffset := higherFirstOffset - higher.offset
-	relativeLastOffset := (relativeFirstOffset + higherSize) % higher.size
-	higherLastOffset := relativeLastOffset + higher.offset
-	file.Seek(int64(higherFirstOffset), 0)
-
-	var seriesBytes []byte
-	if higherFirstOffset < higherLastOffset { // we don't wrap the archive
-		seriesBytes = make([]byte, higherLastOffset-higherFirstOffset)
-		file.Read(seriesBytes)
-	} else { // we do wrap the archive
-		seriesBytes = make([]byte, higher.offset+higher.size-higherFirstOffset)
-		file.Read(seriesBytes)
-		file.Seek(int64(higher.offset), 0)
-		chunk := make([]byte, higherLastOffset-higher.offset)
-		file.Read(chunk)
-		seriesBytes = append(seriesBytes, chunk...)
-	}
-
-	// now we unpack the series data we just read
-	series := make([]DataPoint, 0, len(seriesBytes)/12)
-	var interval int
-	var value float64
-	for i := 0; i < len(seriesBytes); i += 12 {
-		interval, err = unpackInt(seriesBytes[i:i+4], fmt.Sprintf("series interval [%v]", i/12))
-		if err != nil {
-			return false, err
-		}
-		value, err = unpackDecimal(seriesBytes[i+4:i+12], fmt.Sprintf("series value [%v]", i/12))
-		if err != nil {
-			return false, err
-		}
-		series = append(series, DataPoint{int32(interval), value})
-	}
-
-	// and finally we construct a list of values
-	knownValues := make([]float64, 0, len(series))
-	currentInterval := lowerIntervalStart
-	step := higher.secondsPerPoint
-
-	for _, dataPoint := range series {
-		if int64(dataPoint.interval) == currentInterval {
-			knownValues = append(knownValues, dataPoint.value)
-		}
-		currentInterval += int64(step)
-	}
-
-	// propagate aggregateValue to propagate from neighborValues if we have enough known points
-	if len(knownValues) == 0 {
-		return false, nil
-	}
-	knownPercent := float32(len(knownValues)) / float32(len(series))
-	if knownPercent < metadata.xFilesFactor { // we have enough data points to propagate a value
-		return false, nil
-	} else {
-		aggregateValue := Aggregate(metadata.aggregationMethod, knownValues)
-		// TODO: move this to DataPoint.Pack()
-		packedPoint := new(bytes.Buffer)
-		binary.Write(packedPoint, binary.BigEndian, int32(lowerIntervalStart))
-		binary.Write(packedPoint, binary.BigEndian, float64(aggregateValue))
-		file.Seek(int64(lower.offset), 0) // TODO: get rid of cast
-		// TODO: move this into DataPoint.Unpack()
-		pointBytes := make([]byte, 12) // TODO: extract magic number
-		file.Read(pointBytes)
-		lowerBaseInterval, err := unpackInt(pointBytes[0:4], "lowerBaseInterval")
-		if err != nil {
-			return false, err
-		}
-		// only the interval is needed TODO: address this
-		//lowerBaseValue, err := unpackDecimal(pointBytes[4:12], "lowerBaseValue")
-		//if err != nil { return false, err }
-		if lowerBaseInterval == 0 {
-			file.Seek(int64(lower.offset), 0) // TODO: get rid of cast
-			file.Write(packedPoint.Bytes())
-		} else {
-			timeDistance := lowerIntervalStart - int64(lowerBaseInterval)           // TODO: get rid of cast
-			pointDistance := timeDistance / int64(lower.secondsPerPoint)            // TODO: get rid of cast
-			byteDistance := pointDistance * 12                                      // TODO: extract magic number
-			lowerOffset := int64(lower.offset) + (byteDistance % int64(lower.size)) // TODO: get rid of cast
-			file.Seek(lowerOffset, 0)
-			file.Write(packedPoint.Bytes())
-		}
-	}
-	return true, nil
-}
-
-func FileFetch(file *os.File, fromTime, untilTime int64) (*TimeSeries, error) {
-	header, err := readHeader(file)
-	if err != nil {
-		return nil, err
-	}
-	now := time.Now().Unix()
-	if fromTime > untilTime {
-		return nil, fmt.Errorf("Invalid time interval: from time '%s' is after until time '%s'", fromTime, untilTime)
-	}
-	oldestTime := now - int64(header.maxRetention) // TODO: get rid of cast
-	// range is in the future
-	if fromTime > now {
-		return nil, nil
-	}
-	// range is beyond retention
-	if untilTime < oldestTime {
-		return nil, nil
-	}
-	if fromTime < oldestTime {
-		fromTime = oldestTime
-	}
-	if untilTime > now {
-		untilTime = now
-	}
-
-	// TODO: improve this algorithm it's ugly
-	diff := now - fromTime
-	var archive ArchiveInfo
-	for _, archive = range header.archives {
-		if int64(archive.secondsRetained) >= diff { // TODO: get rid of cast
-			break
-		}
-	}
-
-	// TODO: should be an integer
-	fromInterval := fromTime - (fromTime % int64(archive.secondsPerPoint)) + int64(archive.secondsPerPoint)    // TODO: get rid of cast
-	untilInterval := untilTime - (untilTime % int64(archive.secondsPerPoint)) + int64(archive.secondsPerPoint) // TODO: get rid of cast
-
-	file.Seek(int64(archive.offset), 0)
-	// TODO: maybe only fetch the first number
-	packedPoint := make([]byte, 12) // TODO: get rid of magic number
-	file.Read(packedPoint)
-	baseInterval, err := unpackInt(packedPoint[0:4], "baseInterval")
-	if err != nil {
-		return nil, err
-	}
-
-	if baseInterval == 0 {
-		step := int64(archive.secondsPerPoint) // TODO: get rid of cast
-		points := (untilInterval - fromInterval) / step
-		timeInfo := TimeInfo{fromInterval, untilInterval, step}
-		values := make([]float64, points)
-		// TODO: this is wrong, zeros for nil values is wrong
-		return &TimeSeries{timeInfo, values}, nil
-	}
-
-	// TODO: extract these two offset calcs (also done when writing)
-	timeDistance := fromInterval - int64(baseInterval)             // TODO: get rid of cast
-	pointDistance := timeDistance / int64(archive.secondsPerPoint) // TODO: get rid of cast
-	byteDistance := pointDistance * 12
-	fromOffset := int64(archive.offset) + (byteDistance % int64(archive.size)) // TODO: get rid of cast
-
-	timeDistance = untilInterval - int64(baseInterval)            // TODO: get rid of cast
-	pointDistance = timeDistance / int64(archive.secondsPerPoint) // TODO: get rid of cast
-	byteDistance = pointDistance * 12
-	untilOffset := int64(archive.offset) + (byteDistance % int64(archive.size)) // TODO: get rid of cast
-
-	// Read all the points in the interval
-	file.Seek(int64(fromOffset), 0) // TODO: get rid of cast
-	var seriesBytes []byte
-	if fromOffset < untilOffset {
-		seriesBytes = make([]byte, untilOffset-fromOffset)
-		file.Read(seriesBytes)
-	} else {
-		archiveEnd := int64(archive.offset) + int64(archive.size) // TODO: get rid of cast
-		seriesBytes = make([]byte, archiveEnd-fromOffset)
-		file.Read(seriesBytes)
-		file.Seek(int64(archive.offset), 0)                      // TODO: get rid of cast
-		chunk := make([]byte, untilOffset-int64(archive.offset)) // TODO: get rid of cast
-		file.Read(chunk)
-		seriesBytes = append(seriesBytes, chunk...)
-	}
-
-	// Unpack the series data we just read
-	// TODO: extract this into a common method (also used when writing)
-	series := make([]DataPoint, 0, len(seriesBytes)/12)
-	var interval int
-	var value float64
-	for i := 0; i < len(seriesBytes); i += 12 {
-		interval, err = unpackInt(seriesBytes[i:i+4], fmt.Sprintf("series interval [%v]", i/12))
-		if err != nil {
-			return nil, err
-		}
-		value, err = unpackDecimal(seriesBytes[i+4:i+12], fmt.Sprintf("series value [%v]", i/12))
-		if err != nil {
-			return nil, err
-		}
-		series = append(series, DataPoint{int32(interval), value})
-	}
-
-	values := make([]float64, len(series))
-	currentInterval := fromInterval
-	step := int64(archive.secondsPerPoint) // TODO: get rid of cast
-
-	for i, dataPoint := range series {
-		if int64(dataPoint.interval) == currentInterval {
-			values[i] = dataPoint.value
-		}
-		currentInterval += step
-	}
-
-	timeInfo := TimeInfo{fromInterval, untilInterval, step}
-	return &TimeSeries{timeInfo, values}, nil
 }
