@@ -143,6 +143,30 @@ func TestCreateFileAlreadyExists(t *testing.T) {
 	tearDown()
 }
 
+func TestOpenFile(t *testing.T) {
+	path, _, retentions, tearDown := setUpCreate()
+	whisper1, err := Create(path, retentions, Average, 0.5)
+	whisper1.Close()
+
+	whisper2, err := Open(path)
+	if err != nil {
+		t.Fatalf("Failed to open whisper file: %v", err)
+	}
+	if whisper1.aggregationMethod != whisper2.aggregationMethod {
+		t.Fatalf("aggregationMethod did not match, expected %v, received %v", whisper1.aggregationMethod, whisper2.aggregationMethod)
+	}
+	if whisper1.maxRetention != whisper2.maxRetention {
+		t.Fatalf("maxRetention did not match, expected %v, received %v", whisper1.maxRetention, whisper2.maxRetention)
+	}
+	if whisper1.xFilesFactor != whisper2.xFilesFactor {
+		t.Fatalf("xFilesFactor did not match, expected %v, received %v", whisper1.xFilesFactor, whisper2.xFilesFactor)
+	}
+	if len(whisper1.archives) != len(whisper2.archives) {
+		t.Fatalf("archive count does not match, expected %v, received %v", len(whisper1.archives), len(whisper2.archives))
+	}
+	tearDown()
+}
+
 /*
   Test the full cycle of creating a whisper file, adding some
   data points to it and then fetching a time series.
@@ -248,6 +272,44 @@ func BenchmarkCreateUpdateFetch(b *testing.B) {
 		fromTime = now - secondsAgo
 		untilTime = fromTime + 1000
 
+		whisper.Fetch(fromTime, untilTime)
+		whisper.Close()
+		tearDown()
+	}
+}
+
+func BenchmarkFairCreateUpdateFetch(b *testing.B) {
+	path, _, archiveList, tearDown := setUpCreate()
+	var err error
+	var whisper *Whisper
+	var secondsAgo, now, fromTime, untilTime int
+	var currentValue, increment float64
+	for i := 0; i < b.N; i++ {
+		whisper, err = Create(path, archiveList, Average, 0.5)
+		if err != nil {
+			b.Fatalf("Failed create %v", err)
+		}
+		whisper.Close()
+
+		secondsAgo = 3500
+		currentValue = 0.5
+		increment = 0.2
+		now = int(time.Now().Unix())
+
+		for i := 0; i < secondsAgo; i++ {
+			whisper, err = Open(path)
+			err = whisper.Update(currentValue, now - secondsAgo + i)
+			if err != nil {
+				b.Fatalf("Unexpected error for %v: %v", i, err)
+			}
+			currentValue += increment
+			whisper.Close()
+		}
+
+		fromTime = now - secondsAgo
+		untilTime = fromTime + 1000
+
+		whisper, err = Open(path)
 		whisper.Fetch(fromTime, untilTime)
 		whisper.Close()
 		tearDown()

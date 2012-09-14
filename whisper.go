@@ -156,6 +156,35 @@ func Create(path string, retentions []Retention, aggregationMethod AggregationMe
 	return whisper, nil
 }
 
+func Open(path string) (whisper *Whisper, err error) {
+	file, err := os.OpenFile(path, os.O_RDWR, 0666)
+	if err != nil {
+		return nil, err
+	}
+	whisper = new(Whisper)
+	whisper.file = file
+	b := make([]byte, MetadataSize)
+	offset := 0
+	file.Read(b)
+	whisper.aggregationMethod = AggregationMethod(unpackInt(b[offset:offset+IntSize]))
+	offset += IntSize
+	whisper.maxRetention = unpackInt(b[offset:offset+IntSize])
+	offset += IntSize
+	whisper.xFilesFactor = unpackFloat32(b[offset:offset+FloatSize])
+	offset += FloatSize
+	archiveCount := unpackInt(b[offset:offset+IntSize])
+	offset += IntSize
+
+	b = make([]byte, ArchiveInfoSize * archiveCount)
+	file.Read(b)
+	whisper.archives = make([]ArchiveInfo, archiveCount)
+	for i := 0; i < archiveCount; i++ {
+		whisper.archives[i] = unpackArchiveInfo(b[i * ArchiveInfoSize:(i+1) * ArchiveInfoSize])
+	}
+
+	return whisper, nil
+}
+
 func (whisper *Whisper) writeHeader() (err error) {
 	if err = binary.Write(whisper.file, binary.BigEndian, int32(whisper.aggregationMethod)); err != nil {
 		return err
@@ -469,6 +498,10 @@ type ArchiveInfo struct {
 	offset int
 }
 
+func unpackArchiveInfo(b []byte) ArchiveInfo {
+	return ArchiveInfo{Retention{unpackInt(b[:IntSize]), unpackInt(b[IntSize:IntSize*2])}, unpackInt(b[IntSize*2:IntSize*3])}
+}
+
 func (archive *ArchiveInfo) Offset() int64 {
 	return int64(archive.offset)
 }
@@ -530,6 +563,10 @@ func Aggregate(method AggregationMethod, knownValues []float64) float64 {
 
 func unpackInt(b []byte) int {
 	return int(binary.BigEndian.Uint32(b))
+}
+
+func unpackFloat32(b []byte) float32 {
+	return math.Float32frombits(binary.BigEndian.Uint32(b))
 }
 
 func unpackFloat64(b []byte) float64 {
