@@ -1,7 +1,6 @@
 package whisper
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
 	"os"
@@ -9,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"math"
 )
 
 const (
@@ -293,14 +293,8 @@ func (whisper *Whisper) propagate(timestamp int, higher, lower *ArchiveInfo) (bo
 	// now we unpack the series data we just read
 	series := make([]DataPoint, 0, len(seriesBytes)/PointSize)
 	for i := 0; i < len(seriesBytes); i += PointSize {
-		interval, err := unpackInt(seriesBytes[i : i+IntSize])
-		if err != nil {
-			return false, err
-		}
-		value, err := unpackFloat64(seriesBytes[i+IntSize : i+PointSize])
-		if err != nil {
-			return false, err
-		}
+		interval := unpackInt(seriesBytes[i : i+IntSize])
+		value := unpackFloat64(seriesBytes[i+IntSize : i+PointSize])
 		series = append(series, DataPoint{interval, value})
 	}
 
@@ -427,14 +421,8 @@ func (whisper *Whisper) Fetch(fromTime, untilTime int) (timeSeries *TimeSeries, 
 	// TODO: extract this into a common method (also used when writing)
 	series := make([]DataPoint, 0, len(seriesBytes)/PointSize)
 	for i := 0; i < len(seriesBytes); i += PointSize {
-		interval, err := unpackInt(seriesBytes[i : i+IntSize])
-		if err != nil {
-			return nil, err
-		}
-		value, err := unpackFloat64(seriesBytes[i+IntSize : i+PointSize])
-		if err != nil {
-			return nil, err
-		}
+		interval := unpackInt(seriesBytes[i : i+IntSize])
+		value := unpackFloat64(seriesBytes[i+IntSize : i+PointSize])
 		series = append(series, DataPoint{interval, value})
 	}
 
@@ -454,13 +442,13 @@ func (whisper *Whisper) Fetch(fromTime, untilTime int) (timeSeries *TimeSeries, 
 
 func (whisper *Whisper) readInt(offset int64) (int, error) {
 	// TODO: make errors better
-	byteArray := make([]byte, IntSize)
-	_, err := whisper.file.ReadAt(byteArray, offset)
+	b := make([]byte, IntSize)
+	_, err := whisper.file.ReadAt(b, offset)
 	if err != nil {
 		return 0, err
 	}
 
-	return unpackInt(byteArray)
+	return unpackInt(b), nil
 }
 
 type Retention struct {
@@ -498,11 +486,10 @@ type DataPoint struct {
 }
 
 func (point *DataPoint) Bytes() []byte {
-	buffer := new(bytes.Buffer)
-	binary.Write(buffer, binary.BigEndian, int32(point.interval))
-	binary.Write(buffer, binary.BigEndian, point.value)
-
-	return buffer.Bytes()
+	b := make([]byte, PointSize)
+	binary.BigEndian.PutUint32(b[:IntSize], uint32(point.interval))
+	binary.BigEndian.PutUint64(b[IntSize:PointSize], math.Float64bits(point.value))
+	return b
 }
 
 func sum(values []float64) float64 {
@@ -541,21 +528,11 @@ func Aggregate(method AggregationMethod, knownValues []float64) float64 {
 	panic("Invalid aggregation method")
 }
 
-func unpackInt(byteArray []byte) (int, error) {
-	buffer := bytes.NewBuffer(byteArray)
-	var value int32
-	err := binary.Read(buffer, binary.BigEndian, &value)
-	if err != nil {
-		return 0, fmt.Errorf("Failed to read int: %v", err)
-	}
-	return int(value), nil
+func unpackInt(b []byte) int {
+	return int(binary.BigEndian.Uint32(b))
 }
 
-func unpackFloat64(byteArray []byte) (value float64, err error) {
-	buffer := bytes.NewBuffer(byteArray)
-	err = binary.Read(buffer, binary.BigEndian, &value)
-	if err != nil {
-		return 0, fmt.Errorf("Failed to read float64: %v", err)
-	}
-	return value, nil
+func unpackFloat64(b []byte) float64 {
+	return math.Float64frombits(binary.BigEndian.Uint64(b))
 }
+

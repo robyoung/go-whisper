@@ -8,6 +8,17 @@ import (
 	"time"
 )
 
+func checkBytes(t *testing.T, expected, received []byte) {
+	if len(expected) != len(received) {
+		t.Fatalf("Invalid number of bytes. Expected %v, received %v", len(expected), len(received))
+	}
+	for i := range expected {
+		if expected[i] != received[i] {
+			t.Fatalf("Incorrect byte at %v. Expected %v, received %v", i + 1, expected[i], received[i])
+		}
+	}
+}
+
 func testParseRetentionDef(t *testing.T, retentionDef string, expectedPrecision, expectedPoints int, hasError bool) {
 	errTpl := fmt.Sprintf("Expected %%v to be %%v but received %%v for retentionDef %v", retentionDef)
 
@@ -267,4 +278,10 @@ func TestAggregateMax(t *testing.T) {
 
 func TestAggregateMin(t *testing.T) {
 	testAggregate(t, Min, 1.0)
+}
+
+func TestDataPointBytes(t *testing.T) {
+	point := DataPoint{1234, 567.891}
+	b := []byte{0, 0, 4, 210, 64, 129, 191, 32, 196, 155, 165, 227}
+	checkBytes(t, b, point.Bytes())
 }
