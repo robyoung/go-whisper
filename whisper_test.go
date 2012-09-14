@@ -14,7 +14,7 @@ func checkBytes(t *testing.T, expected, received []byte) {
 	}
 	for i := range expected {
 		if expected[i] != received[i] {
-			t.Fatalf("Incorrect byte at %v. Expected %v, received %v", i + 1, expected[i], received[i])
+			t.Fatalf("Incorrect byte at %v. Expected %v, received %v", i+1, expected[i], received[i])
 		}
 	}
 }
@@ -262,7 +262,7 @@ func BenchmarkCreateUpdateFetch(b *testing.B) {
 		now = int(time.Now().Unix())
 
 		for i := 0; i < secondsAgo; i++ {
-			err = whisper.Update(currentValue, now - secondsAgo + i)
+			err = whisper.Update(currentValue, now-secondsAgo+i)
 			if err != nil {
 				b.Fatalf("Unexpected error for %v: %v", i, err)
 			}
@@ -298,7 +298,7 @@ func BenchmarkFairCreateUpdateFetch(b *testing.B) {
 
 		for i := 0; i < secondsAgo; i++ {
 			whisper, err = Open(path)
-			err = whisper.Update(currentValue, now - secondsAgo + i)
+			err = whisper.Update(currentValue, now-secondsAgo+i)
 			if err != nil {
 				b.Fatalf("Unexpected error for %v: %v", i, err)
 			}

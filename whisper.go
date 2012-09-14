@@ -3,12 +3,12 @@ package whisper
 import (
 	"encoding/binary"
 	"fmt"
+	"math"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
-	"math"
 )
 
 const (
@@ -166,20 +166,20 @@ func Open(path string) (whisper *Whisper, err error) {
 	b := make([]byte, MetadataSize)
 	offset := 0
 	file.Read(b)
-	whisper.aggregationMethod = AggregationMethod(unpackInt(b[offset:offset+IntSize]))
+	whisper.aggregationMethod = AggregationMethod(unpackInt(b[offset : offset+IntSize]))
 	offset += IntSize
-	whisper.maxRetention = unpackInt(b[offset:offset+IntSize])
+	whisper.maxRetention = unpackInt(b[offset : offset+IntSize])
 	offset += IntSize
-	whisper.xFilesFactor = unpackFloat32(b[offset:offset+FloatSize])
+	whisper.xFilesFactor = unpackFloat32(b[offset : offset+FloatSize])
 	offset += FloatSize
-	archiveCount := unpackInt(b[offset:offset+IntSize])
+	archiveCount := unpackInt(b[offset : offset+IntSize])
 	offset += IntSize
 
-	b = make([]byte, ArchiveInfoSize * archiveCount)
+	b = make([]byte, ArchiveInfoSize*archiveCount)
 	file.Read(b)
 	whisper.archives = make([]ArchiveInfo, archiveCount)
 	for i := 0; i < archiveCount; i++ {
-		whisper.archives[i] = unpackArchiveInfo(b[i * ArchiveInfoSize:(i+1) * ArchiveInfoSize])
+		whisper.archives[i] = unpackArchiveInfo(b[i*ArchiveInfoSize : (i+1)*ArchiveInfoSize])
 	}
 
 	return whisper, nil
@@ -248,21 +248,8 @@ func (whisper *Whisper) Update(value float64, timestamp int) (err error) {
 
 	myInterval := timestamp - (timestamp % archive.secondsPerPoint)
 	point := DataPoint{myInterval, value}
-	baseInterval, err := whisper.readInt(archive.Offset())
-	if err != nil {
-		return err // TODO: make error better
-	}
 
-	if baseInterval == 0 {
-		_, err = whisper.file.WriteAt(point.Bytes(), archive.Offset())
-	} else {
-		// TODO: extract duplication
-		timeDistance := myInterval - baseInterval
-		pointDistance := timeDistance / archive.secondsPerPoint
-		byteDistance := pointDistance * PointSize
-		myOffset := archive.Offset() + int64(byteDistance%archive.Size())
-		_, err = whisper.file.WriteAt(point.Bytes(), myOffset)
-	}
+	_, err = whisper.file.WriteAt(point.Bytes(), int64(whisper.getPointOffset(myInterval, &archive)))
 	if err != nil {
 		return err
 	}
@@ -281,24 +268,18 @@ func (whisper *Whisper) Update(value float64, timestamp int) (err error) {
 	return nil
 }
 
+func (whisper *Whisper) getPointOffset(start int, archive *ArchiveInfo) int {
+	base, _ := whisper.readInt(archive.Offset())
+	if base == 0 {
+		return int(archive.Offset())
+	}
+	return int(archive.Offset() + int64(((start-base)/archive.secondsPerPoint)*PointSize%archive.Size()))
+}
+
 func (whisper *Whisper) propagate(timestamp int, higher, lower *ArchiveInfo) (bool, error) {
 	lowerIntervalStart := timestamp - (timestamp % lower.secondsPerPoint)
 
-	higherBaseInterval, err := whisper.readInt(higher.Offset())
-	if err != nil {
-		return false, err
-	}
-
-	var higherFirstOffset int
-	if higherBaseInterval == 0 {
-		higherFirstOffset = higherBaseInterval
-	} else {
-		// TODO: extract duplication
-		timeDistance := lowerIntervalStart - higherBaseInterval
-		pointDistance := timeDistance / higher.secondsPerPoint
-		byteDistance := pointDistance * PointSize
-		higherFirstOffset = higher.offset + (byteDistance % higher.Size())
-	}
+	higherFirstOffset := whisper.getPointOffset(lowerIntervalStart, higher)
 
 	// TODO: extract all this series extraction stuff
 	higherPoints := lower.secondsPerPoint / higher.secondsPerPoint
@@ -348,19 +329,7 @@ func (whisper *Whisper) propagate(timestamp int, higher, lower *ArchiveInfo) (bo
 	} else {
 		aggregateValue := Aggregate(whisper.aggregationMethod, knownValues)
 		point := DataPoint{lowerIntervalStart, aggregateValue}
-		lowerBaseInterval, err := whisper.readInt(lower.Offset())
-		if err != nil {
-			return false, err // TODO: make better error
-		}
-		if lowerBaseInterval == 0 {
-			whisper.file.WriteAt(point.Bytes(), lower.Offset())
-		} else {
-			timeDistance := lowerIntervalStart - lowerBaseInterval
-			pointDistance := timeDistance / lower.secondsPerPoint
-			byteDistance := pointDistance * PointSize
-			lowerOffset := lower.Offset() + int64(byteDistance%lower.Size())
-			whisper.file.WriteAt(point.Bytes(), lowerOffset)
-		}
+		whisper.file.WriteAt(point.Bytes(), int64(whisper.getPointOffset(lowerIntervalStart, lower)))
 	}
 	return true, nil
 }
@@ -499,7 +468,7 @@ type ArchiveInfo struct {
 }
 
 func unpackArchiveInfo(b []byte) ArchiveInfo {
-	return ArchiveInfo{Retention{unpackInt(b[:IntSize]), unpackInt(b[IntSize:IntSize*2])}, unpackInt(b[IntSize*2:IntSize*3])}
+	return ArchiveInfo{Retention{unpackInt(b[:IntSize]), unpackInt(b[IntSize : IntSize*2])}, unpackInt(b[IntSize*2 : IntSize*3])}
 }
 
 func (archive *ArchiveInfo) Offset() int64 {
@@ -572,4 +541,3 @@ func unpackFloat32(b []byte) float32 {
 func unpackFloat64(b []byte) float64 {
 	return math.Float64frombits(binary.BigEndian.Uint64(b))
 }
-
