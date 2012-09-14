@@ -122,14 +122,17 @@ func Create(path string, retentions []Retention, aggregationMethod AggregationMe
 	}
 	whisper = new(Whisper)
 
+	// Set the metadata
 	whisper.file = file
 	whisper.aggregationMethod = aggregationMethod
 	whisper.xFilesFactor = xFilesFactor
 	for _, retention := range retentions {
-		if (retention.MaxRetention()) > whisper.maxRetention {
+		if retention.MaxRetention() > whisper.maxRetention {
 			whisper.maxRetention = retention.MaxRetention()
 		}
 	}
+
+	// Set the archive info
 	offset := MetadataSize + (ArchiveInfoSize * len(retentions))
 	whisper.archives = make([]ArchiveInfo, 0, len(retentions))
 	for _, retention := range retentions {
@@ -163,6 +166,8 @@ func Open(path string) (whisper *Whisper, err error) {
 	}
 	whisper = new(Whisper)
 	whisper.file = file
+
+	// read the metadata
 	b := make([]byte, MetadataSize)
 	offset := 0
 	file.Read(b)
@@ -175,6 +180,7 @@ func Open(path string) (whisper *Whisper, err error) {
 	archiveCount := unpackInt(b[offset : offset+IntSize])
 	offset += IntSize
 
+	// read the archive info
 	b = make([]byte, ArchiveInfoSize*archiveCount)
 	file.Read(b)
 	whisper.archives = make([]ArchiveInfo, archiveCount)
@@ -186,6 +192,8 @@ func Open(path string) (whisper *Whisper, err error) {
 }
 
 func (whisper *Whisper) writeHeader() (err error) {
+	// TODO: consider optimizing this in the same way as unpack / pack int / float
+	//       we know the size and the types so it should be effective.
 	if err = binary.Write(whisper.file, binary.BigEndian, int32(whisper.aggregationMethod)); err != nil {
 		return err
 	}
@@ -230,8 +238,7 @@ func (whisper *Whisper) MetadataSize() int {
 }
 
 func (whisper *Whisper) Update(value float64, timestamp int) (err error) {
-	now := int(time.Now().Unix())
-	diff := now - timestamp
+	diff := int(time.Now().Unix()) - timestamp
 	if !(diff < whisper.maxRetention && diff >= 0) {
 		return fmt.Errorf("Timestamp not covered by any archives in this database")
 	}
