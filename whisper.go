@@ -105,6 +105,17 @@ func ParseRetentionDef(retentionDef string) (*Retention, error) {
 	return &Retention{precision, points}, err
 }
 
+func ParseRetentionDefs(retentionDefs string) (Retentions, error) {
+  retentions := make(Retentions, 0)
+  for _, retentionDef := range strings.Split(retentionDefs, ",") {
+    retention, err := ParseRetentionDef(retentionDef)
+    if err != nil {
+      return nil, err
+    }
+    retentions = append(retentions, retention)
+  }
+  return retentions, nil
+}
 /*
 	Represents a Whisper database file.
 */

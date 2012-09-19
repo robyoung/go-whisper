@@ -51,6 +51,16 @@ func TestParseRetentionDef(t *testing.T) {
 	testParseRetentionDef(t, "1m:30f", 0, 0, true)
 }
 
+func TestParseRetentionDefs(t *testing.T) {
+  retentions, err := ParseRetentionDefs("1s:5m,1m:30m")
+  if err != nil {
+    t.Fatalf("Unexpected error: %v", err)
+  }
+  if length := len(retentions); length != 2 {
+    t.Fatalf("Expected 2 retentions, received %v", length)
+  }
+}
+
 func TestSortRetentions(t *testing.T) {
 	retentions := Retentions{{300, 12}, {60, 30}, {1, 300}}
 	sort.Sort(ByPrecision{retentions})
