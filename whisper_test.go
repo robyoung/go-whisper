@@ -52,13 +52,13 @@ func TestParseRetentionDef(t *testing.T) {
 }
 
 func TestParseRetentionDefs(t *testing.T) {
-  retentions, err := ParseRetentionDefs("1s:5m,1m:30m")
-  if err != nil {
-    t.Fatalf("Unexpected error: %v", err)
-  }
-  if length := len(retentions); length != 2 {
-    t.Fatalf("Expected 2 retentions, received %v", length)
-  }
+	retentions, err := ParseRetentionDefs("1s:5m,1m:30m")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if length := len(retentions); length != 2 {
+		t.Fatalf("Expected 2 retentions, received %v", length)
+	}
 }
 
 func TestSortRetentions(t *testing.T) {
@@ -378,4 +378,12 @@ func TestDataPointBytes(t *testing.T) {
 	point := DataPoint{1234, 567.891}
 	b := []byte{0, 0, 4, 210, 64, 129, 191, 32, 196, 155, 165, 227}
 	checkBytes(t, b, point.Bytes())
+}
+
+func TestTimeSeriesPoints(t *testing.T) {
+	ts := TimeSeries{fromTime: 1348003785, untilTime: 1348003795, step: 1, values: []float64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}}
+	points := ts.Points()
+	if length := len(points); length != 10 {
+		t.Fatalf("Unexpected number of points in time series, %v", length)
+	}
 }

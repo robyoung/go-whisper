@@ -106,16 +106,17 @@ func ParseRetentionDef(retentionDef string) (*Retention, error) {
 }
 
 func ParseRetentionDefs(retentionDefs string) (Retentions, error) {
-  retentions := make(Retentions, 0)
-  for _, retentionDef := range strings.Split(retentionDefs, ",") {
-    retention, err := ParseRetentionDef(retentionDef)
-    if err != nil {
-      return nil, err
-    }
-    retentions = append(retentions, retention)
-  }
-  return retentions, nil
+	retentions := make(Retentions, 0)
+	for _, retentionDef := range strings.Split(retentionDefs, ",") {
+		retention, err := ParseRetentionDef(retentionDef)
+		if err != nil {
+			return nil, err
+		}
+		retentions = append(retentions, retention)
+	}
+	return retentions, nil
 }
+
 /*
 	Represents a Whisper database file.
 */
@@ -590,6 +591,19 @@ type TimeSeries struct {
 	untilTime int
 	step      int
 	values    []float64
+}
+
+func (ts *TimeSeries) Points() []TimeSeriesPoint {
+	points := make([]TimeSeriesPoint, len(ts.values))
+	for i, value := range ts.values {
+		points[i] = TimeSeriesPoint{Time: time.Unix(int64(ts.fromTime+ts.step*i), 0), Value: value}
+	}
+	return points
+}
+
+type TimeSeriesPoint struct {
+	Time  time.Time
+	Value float64
 }
 
 type DataPoint struct {
