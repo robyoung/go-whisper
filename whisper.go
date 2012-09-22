@@ -1,3 +1,6 @@
+/*
+	Blah blah
+*/
 package whisper
 
 import (
@@ -348,12 +351,146 @@ func (whisper *Whisper) Update(value float64, timestamp int) (err error) {
 	return nil
 }
 
+func (whisper *Whisper) UpdateMany(points []*TimeSeriesPoint) {
+	// sort the points, newest first
+	sort.Sort(TimeSeriesPointsNewestFirst{points})
+
+	now :=  int(time.Now().Unix()) // TODO: danger of 2030 something overflow
+
+	// loop through the points
+	var currentPoints []*TimeSeriesPoint
+	// var total int
+	for _, archive := range whisper.archives {
+		currentPoints, points = extractPoints(points, now, archive.MaxRetention())
+		// reverse currentPoints
+		for i, j := 0, len(currentPoints) - 1; i < j; i, j = i+1, j-1 {
+			currentPoints[i], currentPoints[j] = currentPoints[j], currentPoints[i]
+		}
+		whisper.archiveUpdateMany(&archive, currentPoints)
+
+		// total += len(currentPoints)
+		// fmt.Println(total, len(currentPoints), len(points))
+
+		// if there is nothing left to do then break
+		if len(points) == 0 {
+			break
+		}
+	}
+	// write the points retention level by retention level
+	//  ie. group by retention level
+	// for each retention level
+
+}
+
+func (whisper *Whisper) archiveUpdateMany(archive *ArchiveInfo, points []*TimeSeriesPoint) {
+	alignedPoints := alignPoints(archive, points)
+	//   align points and take last value
+	// create blocks of contigious sequences of points
+	intervals, packedBlocks := packSequences(archive, alignedPoints)
+	// fmt.Printf("Intervals: %v  %v - %v\n", len(intervals), time.Unix(int64(intervals[0]), 0), time.Unix(int64(intervals[len(intervals)-1]), 0))
+	// fmt.Printf("Blocks:    %v  %v - %v\n", len(packedBlocks), packedBlocks[0], packedBlocks[len(packedBlocks)-1])
+
+	// read base point
+	baseInterval, err := whisper.readInt(archive.Offset())
+	if err != nil {
+		panic("This should now happen")
+	}
+	if baseInterval == 0 {
+		baseInterval = intervals[0]
+	}
+
+	// write packed blocks
+	for i := range intervals {
+		myOffset := archive.PointOffset(baseInterval, intervals[i])
+		bytesBeyond := int(myOffset - archive.End()) + len(packedBlocks[i])
+		if bytesBeyond > 0 {
+			pos := len(packedBlocks[i]) - bytesBeyond
+			whisper.file.WriteAt(packedBlocks[i][:pos], myOffset)
+			whisper.file.WriteAt(packedBlocks[i][pos:], archive.Offset())
+		} else {
+			whisper.file.WriteAt(packedBlocks[i], myOffset)
+		}
+	}
+
+	// propagate
+	higher := archive
+	lowerArchives := whisper.lowerArchives(archive)
+
+	for _, lower := range lowerArchives {
+		seen := make(map[int]bool)
+		propagateFurther := false
+		for _, point := range alignedPoints {
+			interval := point.interval - (point.interval % lower.secondsPerPoint)
+			if !seen[interval] {
+				if propagated, err := whisper.propagate(interval, higher, &lower); err != nil {
+					panic("ERROR")
+				} else if (propagated) {
+					propagateFurther = true
+				}
+			}
+		}
+		if !propagateFurther {
+			break
+		}
+		higher = &lower
+	}
+}
+
+func extractPoints(points []*TimeSeriesPoint, now int, maxRetention int) (currentPoints []*TimeSeriesPoint, remainingPoints []*TimeSeriesPoint) {
+	maxAge := now - maxRetention
+	for i, point := range points {
+		if point.Time < maxAge {
+			return points[:i-1], points[i-1:]
+		}
+	}
+	return points, remainingPoints
+}
+
+func alignPoints(archive *ArchiveInfo, points []*TimeSeriesPoint) []DataPoint {
+	// TODO: see if there's a more efficient way of doing this
+	alignedPoints := make([]DataPoint, 0, len(points))
+	positions := make(map[int]int)
+	for _, point := range points {
+		dataPoint := DataPoint{point.Time - (point.Time % archive.secondsPerPoint), point.Value}
+		if p, ok := positions[dataPoint.interval]; ok {
+			alignedPoints[p] = dataPoint
+		} else {
+			alignedPoints = append(alignedPoints, dataPoint)
+			positions[dataPoint.interval] = len(alignedPoints) - 1
+		}
+	}
+	return alignedPoints
+}
+
+func packSequences(archive *ArchiveInfo, points []DataPoint) (intervals []int, packedBlocks [][]byte) {
+	intervals = make([]int, 0)
+	packedBlocks = make([][]byte, 0)
+	for i, point := range points {
+		if i == 0 ||  point.interval != intervals[len(intervals)-1] + archive.secondsPerPoint {
+			intervals = append(intervals, point.interval)
+			packedBlocks = append(packedBlocks, point.Bytes())
+		} else {
+			packedBlocks[len(packedBlocks)-1] = append(packedBlocks[len(packedBlocks)-1], point.Bytes()...)
+		}
+	}
+	return
+}
+
 func (whisper *Whisper) getPointOffset(start int, archive *ArchiveInfo) int {
-	base, _ := whisper.readInt(archive.Offset())
-	if base == 0 {
+	baseInterval, _ := whisper.readInt(archive.Offset())
+	if baseInterval == 0 {
 		return int(archive.Offset())
 	}
-	return int(archive.Offset() + int64(((start-base)/archive.secondsPerPoint)*PointSize%archive.Size()))
+	return int(archive.Offset() + int64(((start-baseInterval)/archive.secondsPerPoint)*PointSize%archive.Size()))
+}
+
+func (whisper *Whisper) lowerArchives(archive *ArchiveInfo) (lowerArchives []ArchiveInfo) {
+	for i, lower := range whisper.archives {
+		if lower.secondsPerPoint > archive.secondsPerPoint {
+			return whisper.archives[i:]
+		}
+	}
+	return
 }
 
 func (whisper *Whisper) propagate(timestamp int, higher, lower *ArchiveInfo) (bool, error) {
@@ -407,7 +544,7 @@ func (whisper *Whisper) propagate(timestamp int, higher, lower *ArchiveInfo) (bo
 	if knownPercent < whisper.xFilesFactor { // we have enough data points to propagate a value       
 		return false, nil
 	} else {
-		aggregateValue := Aggregate(whisper.aggregationMethod, knownValues)
+		aggregateValue := aggregate(whisper.aggregationMethod, knownValues)
 		point := DataPoint{lowerIntervalStart, aggregateValue}
 		whisper.file.WriteAt(point.Bytes(), int64(whisper.getPointOffset(lowerIntervalStart, lower)))
 	}
@@ -586,6 +723,15 @@ func (archive *ArchiveInfo) Offset() int64 {
 	return int64(archive.offset)
 }
 
+func (archive *ArchiveInfo) PointOffset(baseInterval, interval int) int64 {
+	pointDistance := (interval - baseInterval) / archive.secondsPerPoint
+	return archive.Offset() + int64(pointDistance * PointSize)
+}
+
+func (archive *ArchiveInfo) End() int64 {
+	return archive.Offset() + int64(archive.Size())
+}
+
 type TimeSeries struct {
 	fromTime  int
 	untilTime int
@@ -596,14 +742,36 @@ type TimeSeries struct {
 func (ts *TimeSeries) Points() []TimeSeriesPoint {
 	points := make([]TimeSeriesPoint, len(ts.values))
 	for i, value := range ts.values {
-		points[i] = TimeSeriesPoint{Time: time.Unix(int64(ts.fromTime+ts.step*i), 0), Value: value}
+		points[i] = TimeSeriesPoint{Time: ts.fromTime+ts.step*i, Value: value}
 	}
 	return points
 }
 
+func (ts *TimeSeries) String() string {
+	return fmt.Sprintf("TimeSeries{'%v' '%-v' %v %v}", time.Unix(int64(ts.fromTime), 0), time.Unix(int64(ts.untilTime), 0), ts.step, ts.values)
+}
+
 type TimeSeriesPoint struct {
-	Time  time.Time
+	Time  int
 	Value float64
+}
+
+type TimeSeriesPoints []*TimeSeriesPoint
+
+func (p TimeSeriesPoints) Len() int {
+	return len(p)
+}
+
+func (p TimeSeriesPoints) Swap(i, j int) {
+	p[i], p[j] = p[j], p[i]
+}
+
+type TimeSeriesPointsNewestFirst struct {
+	TimeSeriesPoints
+}
+
+func (p TimeSeriesPointsNewestFirst) Less(i, j int) bool {
+	return p.TimeSeriesPoints[i].Time > p.TimeSeriesPoints[j].Time
 }
 
 type DataPoint struct {
@@ -626,7 +794,7 @@ func sum(values []float64) float64 {
 	return result
 }
 
-func Aggregate(method AggregationMethod, knownValues []float64) float64 {
+func aggregate(method AggregationMethod, knownValues []float64) float64 {
 	switch method {
 	case Average:
 		return sum(knownValues) / float64(len(knownValues))

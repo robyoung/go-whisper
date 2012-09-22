@@ -348,30 +348,99 @@ func BenchmarkFairCreateUpdateFetch(b *testing.B) {
 	}
 }
 
-func testAggregate(t *testing.T, method AggregationMethod, expected float64) {
-	received := Aggregate(method, []float64{1.0, 2.0, 3.0, 5.0, 4.0})
+func testCreateUpdateManyFetch(t *testing.T, aggregationMethod AggregationMethod, xFilesFactor float32, points []*TimeSeriesPoint, fromAgo, fetchLength int) *TimeSeries {
+	var whisper *Whisper
+	var err error
+	path, _, archiveList, tearDown := setUpCreate()
+	whisper, err = Create(path, archiveList, aggregationMethod, xFilesFactor)
+	if err != nil {
+		t.Fatalf("Failed create: %v", err)
+	}
+	defer whisper.Close()
+	now := int(time.Now().Unix())
+
+	whisper.UpdateMany(points)
+
+	fromTime := now - fromAgo
+	untilTime := fromTime + fetchLength
+
+	timeSeries, err := whisper.Fetch(fromTime, untilTime)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	tearDown()
+
+	return timeSeries
+}
+
+func makePoints(count, step int) []*TimeSeriesPoint {
+	points := make([]*TimeSeriesPoint, count)
+	now := int(time.Now().Unix())
+	for i := 0; i < count; i++ {
+		points[i] = &TimeSeriesPoint{now-(i*step), float64(i)}
+	}
+	return points
+}
+
+func printPoints(points []*TimeSeriesPoint) {
+	fmt.Print("[")
+	for i, point := range points {
+		if i > 0 {
+			fmt.Print(", ")
+		}
+		fmt.Printf("%v", point)
+	}
+	fmt.Println("]")
+}
+
+func TestCreateUpdateManyFetch(t *testing.T) {
+	var timeSeries *TimeSeries
+
+	points := makePoints(1000, 2)
+	points = append(points, points[len(points)-1])
+	timeSeries = testCreateUpdateManyFetch(t, Sum, 0.5, points, 1000, 800)
+
+	// fmt.Println(timeSeries)
+
+	testFloatAlmostEqual(t, timeSeries.values[0], 450.0, 10.0)
+}
+
+func Test_extractPoints(t *testing.T) {
+	points := makePoints(100, 1)
+	now := int(time.Now().Unix())
+	currentPoints, remainingPoints := extractPoints(points, now, 50)
+	if length := len(currentPoints); length != 50 {
+		t.Fatalf("First: %v", length)
+	}
+	if length := len(remainingPoints); length != 50 {
+		t.Fatalf("Second: %v", length)
+	}
+}
+
+func test_aggregate(t *testing.T, method AggregationMethod, expected float64) {
+	received := aggregate(method, []float64{1.0, 2.0, 3.0, 5.0, 4.0})
 	if expected != received {
 		t.Fatalf("Expected %v, received %v", expected, received)
 	}
 }
-func TestAggregateAverage(t *testing.T) {
-	testAggregate(t, Average, 3.0)
+func Test_aggregateAverage(t *testing.T) {
+	test_aggregate(t, Average, 3.0)
 }
 
-func TestAggregateSum(t *testing.T) {
-	testAggregate(t, Sum, 15.0)
+func Test_aggregateSum(t *testing.T) {
+	test_aggregate(t, Sum, 15.0)
 }
 
-func TestAggregateLast(t *testing.T) {
-	testAggregate(t, Last, 4.0)
+func Test_aggregateLast(t *testing.T) {
+	test_aggregate(t, Last, 4.0)
 }
 
-func TestAggregateMax(t *testing.T) {
-	testAggregate(t, Max, 5.0)
+func Test_aggregateMax(t *testing.T) {
+	test_aggregate(t, Max, 5.0)
 }
 
-func TestAggregateMin(t *testing.T) {
-	testAggregate(t, Min, 1.0)
+func Test_aggregateMin(t *testing.T) {
+	test_aggregate(t, Min, 1.0)
 }
 
 func TestDataPointBytes(t *testing.T) {
