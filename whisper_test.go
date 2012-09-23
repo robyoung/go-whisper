@@ -63,7 +63,7 @@ func TestParseRetentionDefs(t *testing.T) {
 
 func TestSortRetentions(t *testing.T) {
 	retentions := Retentions{{300, 12}, {60, 30}, {1, 300}}
-	sort.Sort(ByPrecision{retentions})
+	sort.Sort(retentionsByPrecision{retentions})
 	if retentions[0].secondsPerPoint != 1 {
 		t.Fatalf("Retentions array is not sorted")
 	}
@@ -251,28 +251,34 @@ func nearestStep(stamp, step int) int {
 	return stamp - (stamp % step) + step
 }
 
-func testFloatAlmostEqual(t *testing.T, received, expected, slop float64) {
+func assertFloatAlmostEqual(t *testing.T, received, expected, slop float64) {
 	if math.Abs(expected-received) > slop {
 		t.Fatalf("Expected %v to be within %v of %v", expected, slop, received)
+	}
+}
+
+func assertFloatEqual(t *testing.T, received, expected float64) {
+	if math.Abs(expected-received) > 0.00001 {
+		t.Fatalf("Expected %v, received %v", expected, received)
 	}
 }
 
 func TestCreateUpdateFetch(t *testing.T) {
 	var timeSeries *TimeSeries
 	timeSeries = testCreateUpdateFetch(t, Average, 0.5, 3500, 3500, 1000, 300, 0.5, 0.2)
-	testFloatAlmostEqual(t, timeSeries.values[1], 150.1, 58.0)
-	testFloatAlmostEqual(t, timeSeries.values[2], 210.75, 28.95)
+	assertFloatAlmostEqual(t, timeSeries.values[1], 150.1, 58.0)
+	assertFloatAlmostEqual(t, timeSeries.values[2], 210.75, 28.95)
 
 	timeSeries = testCreateUpdateFetch(t, Sum, 0.5, 600, 600, 500, 60, 0.5, 0.2)
-	testFloatAlmostEqual(t, timeSeries.values[0], 18.35, 5.95)
-	testFloatAlmostEqual(t, timeSeries.values[1], 30.35, 5.95)
+	assertFloatAlmostEqual(t, timeSeries.values[0], 18.35, 5.95)
+	assertFloatAlmostEqual(t, timeSeries.values[1], 30.35, 5.95)
 	// 4 is a crazy one because it fluctuates between 60 and ~4k
-	testFloatAlmostEqual(t, timeSeries.values[5], 4356.05, 348.05)
+	assertFloatAlmostEqual(t, timeSeries.values[5], 4356.05, 348.05)
 
 	timeSeries = testCreateUpdateFetch(t, Last, 0.5, 300, 300, 200, 1, 0.5, 0.2)
-	testFloatAlmostEqual(t, timeSeries.values[0], 0.7, 0.001)
-	testFloatAlmostEqual(t, timeSeries.values[10], 2.7, 0.001)
-	testFloatAlmostEqual(t, timeSeries.values[20], 4.7, 0.001)
+	assertFloatAlmostEqual(t, timeSeries.values[0], 0.7, 0.001)
+	assertFloatAlmostEqual(t, timeSeries.values[10], 2.7, 0.001)
+	assertFloatAlmostEqual(t, timeSeries.values[20], 4.7, 0.001)
 
 }
 
@@ -373,11 +379,11 @@ func testCreateUpdateManyFetch(t *testing.T, aggregationMethod AggregationMethod
 	return timeSeries
 }
 
-func makePoints(count, step int) []*TimeSeriesPoint {
+func makePoints(count, step int, value func(int) float64) []*TimeSeriesPoint {
 	points := make([]*TimeSeriesPoint, count)
 	now := int(time.Now().Unix())
 	for i := 0; i < count; i++ {
-		points[i] = &TimeSeriesPoint{now-(i*step), float64(i)}
+		points[i] = &TimeSeriesPoint{now - (i * step), value(i)}
 	}
 	return points
 }
@@ -396,17 +402,27 @@ func printPoints(points []*TimeSeriesPoint) {
 func TestCreateUpdateManyFetch(t *testing.T) {
 	var timeSeries *TimeSeries
 
-	points := makePoints(1000, 2)
+	points := makePoints(1000, 2, func(i int) float64 { return float64(i) })
 	points = append(points, points[len(points)-1])
 	timeSeries = testCreateUpdateManyFetch(t, Sum, 0.5, points, 1000, 800)
 
 	// fmt.Println(timeSeries)
 
-	testFloatAlmostEqual(t, timeSeries.values[0], 450.0, 10.0)
+	assertFloatAlmostEqual(t, timeSeries.values[0], 455, 15)
+
+	// all the ones
+	points = makePoints(10000, 1, func(_ int) float64 { return 1 })
+	timeSeries = testCreateUpdateManyFetch(t, Sum, 0.5, points, 10000, 10000)
+	for i := 0; i < 6; i++ {
+		assertFloatEqual(t, timeSeries.values[i], 1)
+	}
+	for i := 6; i < 10; i++ {
+		assertFloatEqual(t, timeSeries.values[i], 5)
+	}
 }
 
 func Test_extractPoints(t *testing.T) {
-	points := makePoints(100, 1)
+	points := makePoints(100, 1, func(i int) float64 { return float64(i) })
 	now := int(time.Now().Unix())
 	currentPoints, remainingPoints := extractPoints(points, now, 50)
 	if length := len(currentPoints); length != 50 {
@@ -444,7 +460,7 @@ func Test_aggregateMin(t *testing.T) {
 }
 
 func TestDataPointBytes(t *testing.T) {
-	point := DataPoint{1234, 567.891}
+	point := dataPoint{1234, 567.891}
 	b := []byte{0, 0, 4, 210, 64, 129, 191, 32, 196, 155, 165, 227}
 	checkBytes(t, b, point.Bytes())
 }
