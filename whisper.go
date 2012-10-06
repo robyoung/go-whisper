@@ -793,7 +793,7 @@ func unpackFloat64(b []byte) float64 {
 }
 
 func unpackArchiveInfo(b []byte) archiveInfo {
-	return archiveInfo{Retention{unpackInt(b[:IntSize]), unpackInt(b[IntSize : IntSize*2])}, unpackInt(b[IntSize*2 : IntSize*3])}
+	return archiveInfo{Retention{unpackInt(b[IntSize : IntSize*2]), unpackInt(b[IntSize*2 : IntSize*3])}, unpackInt(b[:IntSize])}
 }
 
 func unpackDataPoint(b []byte) dataPoint {

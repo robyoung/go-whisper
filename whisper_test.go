@@ -197,6 +197,18 @@ func TestOpenFile(t *testing.T) {
 	if len(whisper1.archives) != len(whisper2.archives) {
 		t.Fatalf("archive count does not match, expected %v, received %v", len(whisper1.archives), len(whisper2.archives))
 	}
+	for i := range whisper1.archives {
+		if whisper1.archives[i].offset != whisper2.archives[i].offset {
+			t.Fatalf("archive mismatch offset at %v [%v, %v]", i, whisper1.archives[i].offset, whisper2.archives[i].offset)
+		}
+		if whisper1.archives[i].Retention.secondsPerPoint != whisper2.archives[i].Retention.secondsPerPoint {
+			t.Fatalf("Retention.secondsPerPoint mismatch offset at %v [%v, %v]", i, whisper1.archives[i].Retention.secondsPerPoint, whisper2.archives[i].Retention.secondsPerPoint)
+		}
+		if whisper1.archives[i].Retention.numberOfPoints != whisper2.archives[i].Retention.numberOfPoints {
+			t.Fatalf("Retention.numberOfPoints mismatch offset at %v [%v, %v]", i, whisper1.archives[i].Retention.numberOfPoints, whisper2.archives[i].Retention.numberOfPoints)
+		}
+
+	}
 	tearDown()
 }
 
