@@ -407,7 +407,11 @@ func extractPoints(points []*TimeSeriesPoint, now int, maxRetention int) (curren
 	maxAge := now - maxRetention
 	for i, point := range points {
 		if point.Time < maxAge {
-			return points[:i-1], points[i-1:]
+			if i > 0 {
+				return points[:i-1], points[i-1:]
+			} else {
+				return []*TimeSeriesPoint{}, points
+			}
 		}
 	}
 	return points, remainingPoints

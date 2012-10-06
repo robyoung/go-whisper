@@ -433,6 +433,21 @@ func Test_extractPoints(t *testing.T) {
 	}
 }
 
+// extractPoints should return empty slices if the first point is out of range
+func Test_extractPoints_only_old_points(t *testing.T) {
+	now := int(time.Now().Unix())
+	points := make([]*TimeSeriesPoint, 1)
+	points[0] = &TimeSeriesPoint{now - 100, 123.45}
+
+	currentPoints, remainingPoints := extractPoints(points, now, 50)
+	if length := len(currentPoints); length != 0 {
+		t.Fatalf("First: %v", length)
+	}
+	if length := len(remainingPoints); length != 1 {
+		t.Fatalf("Second2: %v", length)
+	}
+}
+
 func test_aggregate(t *testing.T, method AggregationMethod, expected float64) {
 	received := aggregate(method, []float64{1.0, 2.0, 3.0, 5.0, 4.0})
 	if expected != received {
