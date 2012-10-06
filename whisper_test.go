@@ -179,7 +179,12 @@ func TestOpenFile(t *testing.T) {
 	if err != nil {
 		fmt.Errorf("Failed to create: %v", err)
 	}
-	//whisper1.Close()
+
+	// write some points
+	now := int(time.Now().Unix())
+	for i := 0; i < 2; i++ {
+		whisper1.Update(100, now - (i * 1))
+	}
 
 	whisper2, err := Open(path)
 	if err != nil {
@@ -209,6 +214,20 @@ func TestOpenFile(t *testing.T) {
 		}
 
 	}
+
+	result1, err := whisper1.Fetch(now - 3, now)
+	if err != nil {
+		t.Fatalf("Error retrieving result from created whisper")
+	}
+	result2, err := whisper2.Fetch(now - 3, now)
+	if err != nil {
+		t.Fatalf("Error retrieving result from opened whisper")
+	}
+
+	if result1.String() != result2.String() {
+		t.Fatalf("Results do not match")
+	}
+
 	tearDown()
 }
 

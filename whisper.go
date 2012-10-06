@@ -202,7 +202,7 @@ func validateRetentions(retentions Retentions) error {
 			return fmt.Errorf("A Whisper database may not be configured having two archives with the same precision (archive%v: %v, archive%v: %v)", i, retention, i+1, nextRetention)
 		}
 
-		if nextRetention.secondsPerPoint%retention.secondsPerPoint != 0 {
+		if mod(nextRetention.secondsPerPoint, retention.secondsPerPoint) != 0 {
 			return fmt.Errorf("Higher precision archives' precision must evenly divide all lower precision archives' precision (archive%v: %v, archive%v: %v)", i, retention.secondsPerPoint, i+1, nextRetention.secondsPerPoint)
 		}
 
@@ -316,7 +316,7 @@ func (whisper *Whisper) Update(value float64, timestamp int) (err error) {
 		break
 	}
 
-	myInterval := timestamp - (timestamp % archive.secondsPerPoint)
+	myInterval := timestamp - mod(timestamp, archive.secondsPerPoint)
 	point := dataPoint{myInterval, value}
 
 	_, err = whisper.file.WriteAt(point.Bytes(), whisper.getPointOffset(myInterval, &archive))
@@ -390,7 +390,7 @@ func (whisper *Whisper) archiveUpdateMany(archive *archiveInfo, points []*TimeSe
 		seen := make(map[int]bool)
 		propagateFurther := false
 		for _, point := range alignedPoints {
-			interval := point.interval - (point.interval % lower.secondsPerPoint)
+			interval := point.interval - mod(point.interval, lower.secondsPerPoint)
 			if !seen[interval] {
 				if propagated, err := whisper.propagate(interval, higher, &lower); err != nil {
 					panic("Failed to propagate")
@@ -424,7 +424,7 @@ func alignPoints(archive *archiveInfo, points []*TimeSeriesPoint) []dataPoint {
 	alignedPoints := make([]dataPoint, 0, len(points))
 	positions := make(map[int]int)
 	for _, point := range points {
-		dPoint := dataPoint{point.Time - (point.Time % archive.secondsPerPoint), point.Value}
+		dPoint := dataPoint{point.Time - mod(point.Time, archive.secondsPerPoint), point.Value}
 		if p, ok := positions[dPoint.interval]; ok {
 			alignedPoints[p] = dPoint
 		} else {
@@ -480,7 +480,7 @@ func (whisper *Whisper) lowerArchives(archive *archiveInfo) (lowerArchives []arc
 }
 
 func (whisper *Whisper) propagate(timestamp int, higher, lower *archiveInfo) (bool, error) {
-	lowerIntervalStart := timestamp - (timestamp % lower.secondsPerPoint)
+	lowerIntervalStart := timestamp - mod(timestamp, lower.secondsPerPoint)
 
 	higherFirstOffset := whisper.getPointOffset(lowerIntervalStart, higher)
 
@@ -488,7 +488,7 @@ func (whisper *Whisper) propagate(timestamp int, higher, lower *archiveInfo) (bo
 	higherPoints := lower.secondsPerPoint / higher.secondsPerPoint
 	higherSize := higherPoints * PointSize
 	relativeFirstOffset := higherFirstOffset - higher.Offset()
-	relativeLastOffset := (relativeFirstOffset + int64(higherSize)) % int64(higher.Size())
+	relativeLastOffset := int64(mod(int(relativeFirstOffset + int64(higherSize)), higher.Size()))
 	higherLastOffset := relativeLastOffset + higher.Offset()
 
 	series := whisper.readSeries(higherFirstOffset, higherLastOffset, higher)
@@ -664,7 +664,9 @@ func (archive *archiveInfo) PointOffset(baseInterval, interval int) int64 {
 	timeDistance := interval - baseInterval
 	pointDistance := timeDistance / archive.secondsPerPoint
 	byteDistance := pointDistance * PointSize
-	return archive.Offset() + int64(byteDistance%archive.Size())
+	myOffset := archive.Offset() + int64(mod(byteDistance, archive.Size()))
+
+	return myOffset
 }
 
 func (archive *archiveInfo) End() int64 {
@@ -672,7 +674,7 @@ func (archive *archiveInfo) End() int64 {
 }
 
 func (archive *archiveInfo) Interval(time int) int {
-	return time - (time % archive.secondsPerPoint) + archive.secondsPerPoint
+	return time - mod(time, archive.secondsPerPoint) + archive.secondsPerPoint
 }
 
 type TimeSeries struct {
@@ -806,4 +808,12 @@ func unpackDataPoints(b []byte) (series []dataPoint) {
 		series = append(series, unpackDataPoint(b[i:i+PointSize]))
 	}
 	return
+}
+
+/*
+	Implementation of modulo that works like Python
+	Thanks @timmow for this
+*/
+func mod(a, b int) int {
+	return a - (b * int(math.Floor(float64(a) / float64(b))))
 }
