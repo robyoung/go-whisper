@@ -347,6 +347,9 @@ func (whisper *Whisper) UpdateMany(points []*TimeSeriesPoint) {
 	var currentPoints []*TimeSeriesPoint
 	for _, archive := range whisper.archives {
 		currentPoints, points = extractPoints(points, now, archive.MaxRetention())
+		if len(currentPoints) == 0 {
+			continue
+		}
 		// reverse currentPoints
 		for i, j := 0, len(currentPoints)-1; i < j; i, j = i+1, j-1 {
 			currentPoints[i], currentPoints[j] = currentPoints[j], currentPoints[i]

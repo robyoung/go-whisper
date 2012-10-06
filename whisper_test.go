@@ -379,11 +379,20 @@ func testCreateUpdateManyFetch(t *testing.T, aggregationMethod AggregationMethod
 	return timeSeries
 }
 
-func makePoints(count, step int, value func(int) float64) []*TimeSeriesPoint {
+func makeGoodPoints(count, step int, value func(int) float64) []*TimeSeriesPoint {
 	points := make([]*TimeSeriesPoint, count)
 	now := int(time.Now().Unix())
 	for i := 0; i < count; i++ {
 		points[i] = &TimeSeriesPoint{now - (i * step), value(i)}
+	}
+	return points
+}
+
+func makeBadPoints(count, minAge int) []*TimeSeriesPoint {
+	points := make([]*TimeSeriesPoint, count)
+	now := int(time.Now().Unix())
+	for i := 0; i < count; i++ {
+		points[i] = &TimeSeriesPoint{now - (minAge + i), 123.456}
 	}
 	return points
 }
@@ -402,7 +411,7 @@ func printPoints(points []*TimeSeriesPoint) {
 func TestCreateUpdateManyFetch(t *testing.T) {
 	var timeSeries *TimeSeries
 
-	points := makePoints(1000, 2, func(i int) float64 { return float64(i) })
+	points := makeGoodPoints(1000, 2, func(i int) float64 { return float64(i) })
 	points = append(points, points[len(points)-1])
 	timeSeries = testCreateUpdateManyFetch(t, Sum, 0.5, points, 1000, 800)
 
@@ -411,7 +420,7 @@ func TestCreateUpdateManyFetch(t *testing.T) {
 	assertFloatAlmostEqual(t, timeSeries.values[0], 455, 15)
 
 	// all the ones
-	points = makePoints(10000, 1, func(_ int) float64 { return 1 })
+	points = makeGoodPoints(10000, 1, func(_ int) float64 { return 1 })
 	timeSeries = testCreateUpdateManyFetch(t, Sum, 0.5, points, 10000, 10000)
 	for i := 0; i < 6; i++ {
 		assertFloatEqual(t, timeSeries.values[i], 1)
@@ -421,8 +430,24 @@ func TestCreateUpdateManyFetch(t *testing.T) {
 	}
 }
 
+// should not panic if all points are out of range
+func TestCreateUpdateManyOnly_old_points(t *testing.T) {
+	points := makeBadPoints(1, 10000)
+
+	path, _, archiveList, tearDown := setUpCreate()
+	whisper, err := Create(path, archiveList, Sum, 0.5)
+	if err != nil {
+		t.Fatalf("Failed create: %v", err)
+	}
+	defer whisper.Close()
+
+	whisper.UpdateMany(points)
+
+	tearDown()
+}
+
 func Test_extractPoints(t *testing.T) {
-	points := makePoints(100, 1, func(i int) float64 { return float64(i) })
+	points := makeGoodPoints(100, 1, func(i int) float64 { return float64(i) })
 	now := int(time.Now().Unix())
 	currentPoints, remainingPoints := extractPoints(points, now, 50)
 	if length := len(currentPoints); length != 50 {
@@ -436,8 +461,7 @@ func Test_extractPoints(t *testing.T) {
 // extractPoints should return empty slices if the first point is out of range
 func Test_extractPoints_only_old_points(t *testing.T) {
 	now := int(time.Now().Unix())
-	points := make([]*TimeSeriesPoint, 1)
-	points[0] = &TimeSeriesPoint{now - 100, 123.45}
+	points := makeBadPoints(1, 100)
 
 	currentPoints, remainingPoints := extractPoints(points, now, 50)
 	if length := len(currentPoints); length != 0 {
