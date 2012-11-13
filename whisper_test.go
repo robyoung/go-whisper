@@ -183,7 +183,7 @@ func TestOpenFile(t *testing.T) {
 	// write some points
 	now := int(time.Now().Unix())
 	for i := 0; i < 2; i++ {
-		whisper1.Update(100, now - (i * 1))
+		whisper1.Update(100, now-(i*1))
 	}
 
 	whisper2, err := Open(path)
@@ -215,11 +215,11 @@ func TestOpenFile(t *testing.T) {
 
 	}
 
-	result1, err := whisper1.Fetch(now - 3, now)
+	result1, err := whisper1.Fetch(now-3, now)
 	if err != nil {
 		t.Fatalf("Error retrieving result from created whisper")
 	}
-	result2, err := whisper2.Fetch(now - 3, now)
+	result2, err := whisper2.Fetch(now-3, now)
 	if err != nil {
 		t.Fatalf("Error retrieving result from opened whisper")
 	}

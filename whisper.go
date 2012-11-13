@@ -488,7 +488,7 @@ func (whisper *Whisper) propagate(timestamp int, higher, lower *archiveInfo) (bo
 	higherPoints := lower.secondsPerPoint / higher.secondsPerPoint
 	higherSize := higherPoints * PointSize
 	relativeFirstOffset := higherFirstOffset - higher.Offset()
-	relativeLastOffset := int64(mod(int(relativeFirstOffset + int64(higherSize)), higher.Size()))
+	relativeLastOffset := int64(mod(int(relativeFirstOffset+int64(higherSize)), higher.Size()))
 	higherLastOffset := relativeLastOffset + higher.Offset()
 
 	series := whisper.readSeries(higherFirstOffset, higherLastOffset, higher)
@@ -815,5 +815,5 @@ func unpackDataPoints(b []byte) (series []dataPoint) {
 	Thanks @timmow for this
 */
 func mod(a, b int) int {
-	return a - (b * int(math.Floor(float64(a) / float64(b))))
+	return a - (b * int(math.Floor(float64(a)/float64(b))))
 }
