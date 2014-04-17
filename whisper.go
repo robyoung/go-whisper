@@ -576,7 +576,9 @@ func (whisper *Whisper) Fetch(fromTime, untilTime int) (timeSeries *TimeSeries, 
 		step := archive.secondsPerPoint
 		points := (untilInterval - fromInterval) / step
 		values := make([]float64, points)
-		// TODO: this is wrong, zeros for nil values is wrong
+		for i, _ := range values {
+			values[i] = math.NaN()
+		}
 		return &TimeSeries{fromInterval, untilInterval, step, values}, nil
 	}
 
@@ -586,6 +588,9 @@ func (whisper *Whisper) Fetch(fromTime, untilTime int) (timeSeries *TimeSeries, 
 	series := whisper.readSeries(fromOffset, untilOffset, &archive)
 
 	values := make([]float64, len(series))
+	for i, _ := range values {
+		values[i] = math.NaN()
+	}
 	currentInterval := fromInterval
 	step := archive.secondsPerPoint
 
