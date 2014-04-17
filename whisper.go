@@ -689,6 +689,22 @@ type TimeSeries struct {
 	values    []float64
 }
 
+func (ts *TimeSeries) FromTime() int {
+	return ts.fromTime
+}
+
+func (ts *TimeSeries) UntilTime() int {
+	return ts.untilTime
+}
+
+func (ts *TimeSeries) Step() int {
+	return ts.step
+}
+
+func (ts *TimeSeries) Values() []float64 {
+	return ts.values
+}
+
 func (ts *TimeSeries) Points() []TimeSeriesPoint {
 	points := make([]TimeSeriesPoint, len(ts.values))
 	for i, value := range ts.values {
