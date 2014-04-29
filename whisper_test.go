@@ -244,7 +244,12 @@ func testCreateUpdateFetch(t *testing.T, aggregationMethod AggregationMethod, xF
 		t.Fatalf("Failed create: %v", err)
 	}
 	defer whisper.Close()
+	oldestTime := whisper.StartTime()
 	now := int(time.Now().Unix())
+
+	if (now - whisper.maxRetention) != oldestTime {
+		t.Fatalf("Invalid fromTime, expected %v, received %v", oldestTime, now-whisper.maxRetention)
+	}
 
 	for i := 0; i < secondsAgo; i++ {
 		err = whisper.Update(currentValue, now-secondsAgo+i)
@@ -255,11 +260,6 @@ func testCreateUpdateFetch(t *testing.T, aggregationMethod AggregationMethod, xF
 	}
 
 	fromTime := now - fromAgo
-	if fromTime != whisper.StartTime() {
-		t.Fataf("Invalid fromTime, expected %v, received %v", whisper.StartTime(), fromTime)
-	}
-	
-	
 	untilTime := fromTime + fetchLength
 
 	timeSeries, err := whisper.Fetch(fromTime, untilTime)
