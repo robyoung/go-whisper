@@ -536,6 +536,14 @@ func (whisper *Whisper) readSeries(start, end int64, archive *archiveInfo) []dat
 }
 
 /*
+  Calculate the starting time for a whisper db.
+*/
+func (whisper *Whisper) StartTime() int {
+	now := int(time.Now().Unix()) // TODO: danger of 2030 something overflow
+	return now - whisper.maxRetention
+}
+
+/*
   Fetch a TimeSeries for a given time span from the file.
 */
 func (whisper *Whisper) Fetch(fromTime, untilTime int) (timeSeries *TimeSeries, err error) {
@@ -543,7 +551,7 @@ func (whisper *Whisper) Fetch(fromTime, untilTime int) (timeSeries *TimeSeries, 
 	if fromTime > untilTime {
 		return nil, fmt.Errorf("Invalid time interval: from time '%s' is after until time '%s'", fromTime, untilTime)
 	}
-	oldestTime := now - whisper.maxRetention
+	oldestTime := whisper.StartTime()
 	// range is in the future
 	if fromTime > now {
 		return nil, nil
