@@ -299,6 +299,25 @@ func assertFloatEqual(t *testing.T, received, expected float64) {
 	}
 }
 
+func TestFetchEmptyTimeseries(t *testing.T) {
+	path, _, archiveList, tearDown := setUpCreate()
+	whisper, err := Create(path, archiveList, Sum, 0.5)
+	if err != nil {
+		t.Fatalf("Failed create: %v", err)
+	}
+	defer whisper.Close()
+
+	now := int(time.Now().Unix())
+	result, err := whisper.Fetch(now-3, now)
+	for _, point := range result.Points() {
+		if !math.IsNaN(point.Value) {
+			t.Fatalf("Expecting NaN values got '%v'", point.Value)
+		}
+	}
+
+	tearDown()
+}
+
 func TestCreateUpdateFetch(t *testing.T) {
 	var timeSeries *TimeSeries
 	timeSeries = testCreateUpdateFetch(t, Average, 0.5, 3500, 3500, 1000, 300, 0.5, 0.2)
