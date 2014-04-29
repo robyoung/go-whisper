@@ -255,6 +255,11 @@ func testCreateUpdateFetch(t *testing.T, aggregationMethod AggregationMethod, xF
 	}
 
 	fromTime := now - fromAgo
+	if fromTime != whisper.StartTime() {
+		t.Fataf("Invalid fromTime, expected %v, received %v", whisper.StartTime(), fromTime)
+	}
+	
+	
 	untilTime := fromTime + fetchLength
 
 	timeSeries, err := whisper.Fetch(fromTime, untilTime)
