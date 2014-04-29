@@ -288,7 +288,7 @@ func (whisper *Whisper) Size() int {
 }
 
 /*
-  Calculate the number of bytes the metadata section will be.  
+  Calculate the number of bytes the metadata section will be.
 */
 func (whisper *Whisper) MetadataSize() int {
 	return MetadataSize + (ArchiveInfoSize * len(whisper.archives))
@@ -504,12 +504,12 @@ func (whisper *Whisper) propagate(timestamp int, higher, lower *archiveInfo) (bo
 		currentInterval += higher.secondsPerPoint
 	}
 
-	// propagate aggregateValue to propagate from neighborValues if we have enough known points        
+	// propagate aggregateValue to propagate from neighborValues if we have enough known points
 	if len(knownValues) == 0 {
 		return false, nil
 	}
 	knownPercent := float32(len(knownValues)) / float32(len(series))
-	if knownPercent < whisper.xFilesFactor { // check we have enough data points to propagate a value       
+	if knownPercent < whisper.xFilesFactor { // check we have enough data points to propagate a value
 		return false, nil
 	} else {
 		aggregateValue := aggregate(whisper.aggregationMethod, knownValues)
@@ -536,6 +536,14 @@ func (whisper *Whisper) readSeries(start, end int64, archive *archiveInfo) []dat
 }
 
 /*
+  Calculate the starting time for a whisper db.
+*/
+func (whisper *Whisper) StartTime() int {
+	now := int(time.Now().Unix()) // TODO: danger of 2030 something overflow
+	return now - whisper.maxRetention
+}
+
+/*
   Fetch a TimeSeries for a given time span from the file.
 */
 func (whisper *Whisper) Fetch(fromTime, untilTime int) (timeSeries *TimeSeries, err error) {
@@ -543,7 +551,7 @@ func (whisper *Whisper) Fetch(fromTime, untilTime int) (timeSeries *TimeSeries, 
 	if fromTime > untilTime {
 		return nil, fmt.Errorf("Invalid time interval: from time '%s' is after until time '%s'", fromTime, untilTime)
 	}
-	oldestTime := now - whisper.maxRetention
+	oldestTime := whisper.StartTime()
 	// range is in the future
 	if fromTime > now {
 		return nil, nil
