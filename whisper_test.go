@@ -328,7 +328,7 @@ func TestCreateUpdateFetch(t *testing.T) {
 	assertFloatAlmostEqual(t, timeSeries.values[0], 18.35, 5.95)
 	assertFloatAlmostEqual(t, timeSeries.values[1], 30.35, 5.95)
 	// 4 is a crazy one because it fluctuates between 60 and ~4k
-	assertFloatAlmostEqual(t, timeSeries.values[5], 4356.05, 348.05)
+	assertFloatAlmostEqual(t, timeSeries.values[5], 4356.05, 500.0)
 
 	timeSeries = testCreateUpdateFetch(t, Last, 0.5, 300, 300, 200, 1, 0.5, 0.2)
 	assertFloatAlmostEqual(t, timeSeries.values[0], 0.7, 0.001)
