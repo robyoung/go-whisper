@@ -1,5 +1,7 @@
 # Go Whisper
 
+[![Build Status](https://travis-ci.org/robyoung/go-whisper.png?branch=master)](https://travis-ci.org/robyoung/go-whisper?branch=master)
+
 Go Whisper is a whisper implementation of the [Whisper](https://github.com/graphite-project/whisper) database, which is part of the [Graphite Project](http://graphite.wikidot.com/). 
 
 To create a new whisper database you must define it's retention levels (see: [storage schemas](http://graphite.readthedocs.org/en/1.0/config-carbon.html#storage-schemas-conf)), aggregation method and the xFilesFactor. The xFilesFactor specifies the fraction of data points in a propagation interval that must have known values for a propagation to occur.
