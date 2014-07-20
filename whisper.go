@@ -549,7 +549,7 @@ func (whisper *Whisper) StartTime() int {
 func (whisper *Whisper) Fetch(fromTime, untilTime int) (timeSeries *TimeSeries, err error) {
 	now := int(time.Now().Unix()) // TODO: danger of 2030 something overflow
 	if fromTime > untilTime {
-		return nil, fmt.Errorf("Invalid time interval: from time '%s' is after until time '%s'", fromTime, untilTime)
+		return nil, fmt.Errorf("Invalid time interval: from time '%d' is after until time '%d'", fromTime, untilTime)
 	}
 	oldestTime := whisper.StartTime()
 	// range is in the future
