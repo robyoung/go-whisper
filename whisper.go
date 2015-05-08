@@ -383,7 +383,7 @@ func (whisper *Whisper) archiveUpdateMany(archive *archiveInfo, points []*TimeSe
 		}
 	}
 
-	higher := archive
+	higher := *archive
 	lowerArchives := whisper.lowerArchives(archive)
 
 	for _, lower := range lowerArchives {
@@ -392,7 +392,7 @@ func (whisper *Whisper) archiveUpdateMany(archive *archiveInfo, points []*TimeSe
 		for _, point := range alignedPoints {
 			interval := point.interval - mod(point.interval, lower.secondsPerPoint)
 			if !seen[interval] {
-				if propagated, err := whisper.propagate(interval, higher, &lower); err != nil {
+				if propagated, err := whisper.propagate(interval, &higher, &lower); err != nil {
 					panic("Failed to propagate")
 				} else if propagated {
 					propagateFurther = true
@@ -402,7 +402,7 @@ func (whisper *Whisper) archiveUpdateMany(archive *archiveInfo, points []*TimeSe
 		if !propagateFurther {
 			break
 		}
-		higher = &lower
+		higher = lower
 	}
 }
 
