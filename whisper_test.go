@@ -566,3 +566,57 @@ func TestTimeSeriesPoints(t *testing.T) {
 		t.Fatalf("Unexpected number of points in time series, %v", length)
 	}
 }
+
+func TestUpdateManyWithManyRetentions(t *testing.T) {
+	path, _, archiveList, tearDown := setUpCreate()
+	lastArchive := archiveList[len(archiveList)-1]
+
+	valueMin := 41
+	valueMax := 43
+
+	whisper, err := Create(path, archiveList, Average, 0.5)
+	if err != nil {
+		t.Fatalf("Failed create: %v", err)
+	}
+
+	points := make([]*TimeSeriesPoint, 1)
+
+	now := int(time.Now().Unix())
+	for i := 0; i < lastArchive.secondsPerPoint*2; i++ {
+		points[0] = &TimeSeriesPoint{
+			Time:  now - i,
+			Value: float64(valueMin*(i%2) + valueMax*((i+1)%2)), // valueMin, valueMax, valueMin...
+		}
+		whisper.UpdateMany(points)
+	}
+
+	whisper.Close()
+
+	// check data in last archive
+	whisper, err = Open(path)
+	if err != nil {
+		t.Fatalf("Failed open: %v", err)
+	}
+
+	result, err := whisper.Fetch(now-lastArchive.numberOfPoints*lastArchive.secondsPerPoint, now)
+	if err != nil {
+		t.Fatalf("Failed fetch: %v", err)
+	}
+
+	foundValues := 0
+	for i := 0; i < len(result.values); i++ {
+		if !math.IsNaN(result.values[i]) {
+			if result.values[i] >= float64(valueMin) &&
+				result.values[i] <= float64(valueMax) {
+				foundValues++
+			}
+		}
+	}
+	if foundValues < 2 {
+		t.Fatalf("Not found values in archive %#v", lastArchive)
+	}
+
+	whisper.Close()
+
+	tearDown()
+}
