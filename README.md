@@ -21,12 +21,14 @@ wsp, err := whisper.Open("/tmp/test.wsp")
 
 Once you have a whisper database you can set values at given time points. This sets the time point 1 hour ago to 12345.678.
 ```go
-wsp.Update(12345.678, time.Now().Add(time.ParseDuration("-1h")).Unix())
+offset, _ := time.ParseDuration("-1h")
+wsp.Update(12345.678, int(time.Now().Add(offset).Unix()))
 ```
 
 And you can retrieve time series from it. This example fetches a time series for the last 1 hour and then iterates through it's points.
 ```go
-series, err := wsp.Fetch(time.Now().Add(time.ParseDuration("-1h")).Unix(), time.Now().Unix())
+offset, _ := time.ParseDuration("-1h")
+series, err := wsp.Fetch(int(time.Now().Add(offset).Unix()), int(time.Now().Unix()))
 if err != nil {
   // handle
 }
