@@ -231,6 +231,56 @@ func TestOpenFile(t *testing.T) {
 	tearDown()
 }
 
+// TestReadOnlyFile tests that we can open and read from a read only file
+// successfully.  It also confirms that we cannot write to it.
+func TestReadOnlyFile(t *testing.T) {
+	path, _, retentions, tearDown := setUpCreate()
+	wsp, err := Create(path, retentions, Average, 0.5)
+	if err != nil {
+		fmt.Errorf("Failed to create: %v", err)
+	}
+
+	// write some points
+	now := int(time.Now().Unix())
+	for i := 0; i < 2; i++ {
+		wsp.Update(100, now-(i*1))
+	}
+	knownResults, err := wsp.Fetch(now-3, now)
+	if err != nil {
+		t.Fatalf("Unable to fetch from whisper file: %s", err.Error())
+	}
+	wsp.Close()
+
+	// Change permissions to 0400 read only for the creating user
+	os.Chmod(path, 0400)
+
+	wsp, err = Open(path)
+	if err != nil {
+		t.Fatalf("Unable to open read only file: %s", path)
+	}
+
+	results, err := wsp.Fetch(now-3, now)
+	if err != nil {
+		t.Fatalf("Unable to fetch from read only file: %s", path)
+	}
+	if results.String() != knownResults.String() {
+		t.Fatalf("Fetch results from read only file do not match")
+	}
+
+	err = wsp.Update(100, now-4)
+	if err == nil {
+		// Yes, we are looking for success here
+		t.Fatalf("Able to write to read only file: %s", path)
+	} else {
+		t.Logf("Write to read only file returned expected error: %s", err.Error())
+	}
+	wsp.Close()
+
+	// Revert permissions
+	os.Chmod(path, 0600)
+	tearDown()
+}
+
 /*
   Test the full cycle of creating a whisper file, adding some
   data points to it and then fetching a time series.
